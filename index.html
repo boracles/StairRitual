@@ -256,7 +256,12 @@
       let sequenceRunning = false;
       let lastSequenceDuration = 0;
       let loadedImageScoreEvents = [];
+      let loadedImageScoreBitmap = null;
+      let loadedImageScoreName = "";
+      let loadedImageScoreDisplay = null;
       let imageScorePlaying = false;
+      let imageScorePlaybackStartTime = 0;
+      let imageScorePlaybackDuration = 30;
       const imageScoreTimers = [];
       let activeScoreMode = "idle"; // "idle" | "movement" | "image"
       const archivedBodyGlyphEvents = [];
@@ -598,6 +603,7 @@
         try {
           sequenceStatus.textContent = "READING IMAGE SCORE";
           if (sequenceRunning) stopMovementSequence();
+          loadedImageScoreName = file.name || "loaded score";
           loadedImageScoreEvents = await analyzeImageScoreFile(file);
           activeScoreMode = "image";
           sequenceStatus.textContent = `IMAGE SCORE · ${loadedImageScoreEvents.length} EVENTS`;
@@ -789,11 +795,19 @@
             }
           }
 
-          drawTrajectoryLines(now);
-          drawBodyGlyphEvents(now);
+          if (activeScoreMode === "image" && loadedImageScoreBitmap) {
+            drawLoadedImageScoreViewer(now);
+          } else {
+            drawTrajectoryLines(now);
+            drawBodyGlyphEvents(now);
+          }
           drawTopFadeOverlay();
           drawAlienSignalTitle(getScoreRect());
-          drawPlayhead();
+          if (activeScoreMode === "image" && loadedImageScoreBitmap) {
+            drawImageScorePlaybackHead(now);
+          } else {
+            drawPlayhead();
+          }
           drawLegendBar(getScoreRect());
           if (!imageScorePlaying) {
             updateGlobalSound();
@@ -2541,6 +2555,8 @@
 
       async function analyzeImageScoreFile(file) {
         const bitmap = await createImageBitmap(file);
+        loadedImageScoreBitmap = bitmap;
+        loadedImageScoreDisplay = null;
         const maxAnalysisWidth = 900;
         const scale = Math.min(1, maxAnalysisWidth / bitmap.width);
         const w = Math.max(1, Math.round(bitmap.width * scale));
@@ -2682,6 +2698,199 @@
         return events.sort((a, b) => a.time - b.time);
       }
 
+      function getImageScoreDisplayRect() {
+        if (!loadedImageScoreBitmap) return null;
+        const rect = getScoreRect();
+        const maxW = rect.width * 0.88;
+        const maxH = rect.height * 0.9;
+        const imageRatio =
+          loadedImageScoreBitmap.width / loadedImageScoreBitmap.height;
+        const boxRatio = maxW / maxH;
+        let drawW;
+        let drawH;
+
+        if (imageRatio > boxRatio) {
+          drawW = maxW;
+          drawH = drawW / imageRatio;
+        } else {
+          drawH = maxH;
+          drawW = drawH * imageRatio;
+        }
+
+        const x = rect.left + (rect.width - drawW) * 0.5;
+        const y = rect.top + (rect.height - drawH) * 0.5;
+
+        return { x, y, w: drawW, h: drawH };
+      }
+
+      function drawLoadedImageScoreViewer(now) {
+        if (!loadedImageScoreBitmap) return;
+
+        const display = getImageScoreDisplayRect();
+        if (!display) return;
+        loadedImageScoreDisplay = display;
+
+        ctx.save();
+
+        // soft white card behind the uploaded score image
+        ctx.fillStyle = "rgba(255,255,255,0.86)";
+        roundRectPath(
+          ctx,
+          display.x - 18,
+          display.y - 18,
+          display.w + 36,
+          display.h + 36,
+          18,
+        );
+        ctx.fill();
+
+        ctx.strokeStyle = "rgba(16,17,20,0.08)";
+        ctx.lineWidth = 1;
+        roundRectPath(
+          ctx,
+          display.x - 18,
+          display.y - 18,
+          display.w + 36,
+          display.h + 36,
+          18,
+        );
+        ctx.stroke();
+
+        ctx.globalAlpha = imageScorePlaying ? 0.92 : 0.74;
+        ctx.drawImage(
+          loadedImageScoreBitmap,
+          display.x,
+          display.y,
+          display.w,
+          display.h,
+        );
+
+        ctx.globalAlpha = 1;
+        ctx.textAlign = "left";
+        ctx.textBaseline = "bottom";
+        ctx.font =
+          '600 12px Pretendard, "Noto Sans KR", "Noto Sans", Arial, sans-serif';
+        ctx.fillStyle = "rgba(18,18,18,0.48)";
+        ctx.fillText(
+          imageScorePlaying ? "PLAYING UPLOADED SCORE" : "UPLOADED SCORE READY",
+          display.x,
+          display.y - 26,
+        );
+
+        if (loadedImageScoreName) {
+          ctx.textAlign = "right";
+          ctx.fillStyle = "rgba(18,18,18,0.34)";
+          ctx.fillText(
+            loadedImageScoreName,
+            display.x + display.w,
+            display.y - 26,
+          );
+        }
+
+        // faint markers for the extracted events, so the user can see what the reader is hearing
+        loadedImageScoreEvents.forEach((event) => {
+          const x = display.x + event.x * display.w;
+          const y = display.y + event.y * display.h;
+          const color = getImageScoreCategoryColor(event.category);
+          const c = hexToRgb(color);
+          ctx.beginPath();
+          ctx.arc(x, y, 3.5 + event.energy * 5, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${imageScorePlaying ? 0.28 : 0.18})`;
+          ctx.fill();
+        });
+
+        ctx.restore();
+      }
+
+      function drawImageScorePlaybackHead(now) {
+        if (!loadedImageScoreBitmap) return;
+        const display = loadedImageScoreDisplay || getImageScoreDisplayRect();
+        if (!display) return;
+
+        const duration = clamp(
+          Number(imageScoreDurationInput.value) ||
+            imageScorePlaybackDuration ||
+            30,
+          5,
+          180,
+        );
+        const elapsed = imageScorePlaying
+          ? clamp(
+              (performance.now() - imageScorePlaybackStartTime) / 1000,
+              0,
+              duration,
+            )
+          : 0;
+        const progress = imageScorePlaying ? elapsed / duration : 0;
+        const y = display.y + progress * display.h;
+
+        ctx.save();
+
+        // darken the part that has not yet been played very slightly
+        if (imageScorePlaying) {
+          ctx.fillStyle = "rgba(255,255,255,0.58)";
+          ctx.fillRect(display.x, y, display.w, display.y + display.h - y);
+        }
+
+        ctx.strokeStyle = imageScorePlaying
+          ? "rgba(18,18,18,0.72)"
+          : "rgba(18,18,18,0.16)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(display.x - 10, y);
+        ctx.lineTo(display.x + display.w + 10, y);
+        ctx.stroke();
+
+        if (imageScorePlaying) {
+          ctx.fillStyle = "rgba(18,18,18,0.86)";
+          ctx.beginPath();
+          ctx.arc(display.x - 14, y, 5, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.font =
+            '600 11px Pretendard, "Noto Sans KR", "Noto Sans", Arial, sans-serif';
+          ctx.textAlign = "left";
+          ctx.textBaseline = "bottom";
+          ctx.fillStyle = "rgba(18,18,18,0.62)";
+          ctx.fillText(
+            `${elapsed.toFixed(1)} / ${duration.toFixed(1)}s`,
+            display.x,
+            y - 8,
+          );
+        }
+
+        ctx.restore();
+      }
+
+      function getImageScoreCategoryColor(category) {
+        return (
+          {
+            head: DESIGN.colors.head,
+            shoulder: DESIGN.colors.shoulder,
+            elbow: DESIGN.colors.elbow,
+            hand: DESIGN.colors.hand,
+            hip: DESIGN.colors.hip,
+            knee: DESIGN.colors.knee,
+            foot: DESIGN.colors.foot,
+          }[category] || DESIGN.ink
+        );
+      }
+
+      function roundRectPath(targetCtx, x, y, w, h, r) {
+        const radius = Math.min(r, w * 0.5, h * 0.5);
+        targetCtx.beginPath();
+        targetCtx.moveTo(x + radius, y);
+        targetCtx.lineTo(x + w - radius, y);
+        targetCtx.quadraticCurveTo(x + w, y, x + w, y + radius);
+        targetCtx.lineTo(x + w, y + h - radius);
+        targetCtx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+        targetCtx.lineTo(x + radius, y + h);
+        targetCtx.quadraticCurveTo(x, y + h, x, y + h - radius);
+        targetCtx.lineTo(x, y + radius);
+        targetCtx.quadraticCurveTo(x, y, x + radius, y);
+        targetCtx.closePath();
+      }
+
       function classifyScorePixel(h, s, v) {
         // Hue ranges match the current score color system.
         // Dark/black pixels are intentionally ignored before this function.
@@ -2755,6 +2964,7 @@
         resetContinuousSoundForImageScore();
 
         imageScorePlaying = true;
+        imageScorePlaybackStartTime = performance.now();
         updateSequenceControls();
         sequenceStatus.textContent = "PLAYING IMAGE SCORE";
 
@@ -2763,6 +2973,7 @@
           5,
           180,
         );
+        imageScorePlaybackDuration = duration;
 
         loadedImageScoreEvents.forEach((event) => {
           const timer = window.setTimeout(() => {
@@ -2788,6 +2999,7 @@
         imageScoreTimers.forEach((timer) => window.clearTimeout(timer));
         imageScoreTimers.length = 0;
         imageScorePlaying = false;
+        imageScorePlaybackStartTime = 0;
         fadeContinuousSoundToIdle();
         sequenceStatus.textContent = "IMAGE SCORE STOPPED";
         updateSequenceControls();

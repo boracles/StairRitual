@@ -76,6 +76,55 @@
         box-shadow: 0 0 28px rgba(47, 230, 224, 0.16);
       }
 
+      #topControls {
+        position: fixed;
+        top: 20px;
+        right: 24px;
+        display: none;
+        align-items: center;
+        gap: 10px;
+        z-index: 12;
+      }
+
+      .controlButton {
+        appearance: none;
+        border: 1px solid rgba(24, 28, 36, 0.12);
+        background: rgba(255, 255, 255, 0.92);
+        color: rgba(24, 28, 36, 0.92);
+        border-radius: 999px;
+        padding: 10px 16px;
+        font:
+          600 13px/1 Pretendard,
+          "Noto Sans KR",
+          "Noto Sans",
+          Arial,
+          sans-serif;
+        letter-spacing: 0.01em;
+        cursor: pointer;
+        box-shadow: 0 8px 24px rgba(20, 28, 44, 0.08);
+        backdrop-filter: blur(10px);
+      }
+
+      .controlButton:disabled {
+        opacity: 0.38;
+        cursor: default;
+      }
+
+      #sequenceStatus {
+        padding: 10px 14px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.92);
+        border: 1px solid rgba(24, 28, 36, 0.08);
+        color: rgba(24, 28, 36, 0.56);
+        font:
+          500 12px/1 Pretendard,
+          "Noto Sans KR",
+          "Noto Sans",
+          Arial,
+          sans-serif;
+        box-shadow: 0 8px 24px rgba(20, 28, 44, 0.06);
+      }
+
       #status {
         display: none;
       }
@@ -92,6 +141,19 @@
     <canvas id="videoOverlay"></canvas>
 
     <button id="startButton">START GRAPHIC SCORE</button>
+
+    <div id="topControls">
+      <button id="sequenceStartButton" class="controlButton">
+        START MOVE SEQUENCE
+      </button>
+      <button id="sequenceStopButton" class="controlButton" disabled>
+        STOP
+      </button>
+      <button id="saveScoreButton" class="controlButton" disabled>
+        SAVE LONG SCORE
+      </button>
+      <div id="sequenceStatus">READY</div>
+    </div>
 
     <div id="debug"></div>
 
@@ -111,6 +173,13 @@
       const canvas = document.getElementById("scoreCanvas");
       const ctx = canvas.getContext("2d");
       const startButton = document.getElementById("startButton");
+      const topControls = document.getElementById("topControls");
+      const sequenceStartButton = document.getElementById(
+        "sequenceStartButton",
+      );
+      const sequenceStopButton = document.getElementById("sequenceStopButton");
+      const saveScoreButton = document.getElementById("saveScoreButton");
+      const sequenceStatus = document.getElementById("sequenceStatus");
       const debug = document.getElementById("debug");
 
       let width = window.innerWidth;
@@ -124,6 +193,10 @@
       let audioReady = false;
       let startTime = 0;
       let smoothedSoundEnergy = 0;
+      let systemReady = false;
+      let sequenceRunning = false;
+      let lastSequenceDuration = 0;
+      const archivedBodyGlyphEvents = [];
 
       const SCORE_THRESHOLD = 0.35;
       const SCORE_WINDOW_SECONDS = 10;
@@ -151,7 +224,7 @@
       const leftMargin = 64;
       const rightMargin = 64;
       const topMargin = 92;
-      const PANEL_HEIGHT = 128;
+      const PANEL_HEIGHT = 136;
       const bottomMargin = PANEL_HEIGHT;
 
       const BODY_GUIDE = {
@@ -165,13 +238,13 @@
       };
 
       const EVENT_DENSITY = {
-        head: { threshold: 0.06, minInterval: 0.22, minGap: 0.2 },
-        shoulder: { threshold: 0.11, minInterval: 0.24, minGap: 0.22 },
-        elbow: { threshold: 0.035, minInterval: 0.14, minGap: 0.12 },
-        hand: { threshold: 0.07, minInterval: 0.14, minGap: 0.14 },
-        hip: { threshold: 0.07, minInterval: 0.22, minGap: 0.2 },
-        knee: { threshold: 0.08, minInterval: 0.18, minGap: 0.18 },
-        foot: { threshold: 0.08, minInterval: 0.22, minGap: 0.2 },
+        head: { threshold: 0.018, minInterval: 0.22, minGap: 0.2 },
+        shoulder: { threshold: 0.022, minInterval: 0.24, minGap: 0.22 },
+        elbow: { threshold: 0.018, minInterval: 0.14, minGap: 0.12 },
+        hand: { threshold: 0.02, minInterval: 0.14, minGap: 0.14 },
+        hip: { threshold: 0.016, minInterval: 0.22, minGap: 0.2 },
+        knee: { threshold: 0.018, minInterval: 0.18, minGap: 0.18 },
+        foot: { threshold: 0.018, minInterval: 0.22, minGap: 0.2 },
       };
 
       const lanes = [
@@ -427,7 +500,9 @@
           startTime = performance.now();
 
           poseReady = true;
+          systemReady = true;
           startButton.style.display = "none";
+          updateSequenceControls();
 
           requestAnimationFrame(loop);
         } catch (error) {
@@ -436,6 +511,59 @@
           debug.textContent = error.message;
         }
       });
+
+      sequenceStartButton.addEventListener("click", () => {
+        beginMovementSequence();
+      });
+
+      sequenceStopButton.addEventListener("click", () => {
+        stopMovementSequence();
+      });
+
+      saveScoreButton.addEventListener("click", async () => {
+        await saveLongScoreImage();
+      });
+
+      function updateSequenceControls() {
+        topControls.style.display = systemReady ? "flex" : "none";
+        sequenceStartButton.disabled = !systemReady || sequenceRunning;
+        sequenceStopButton.disabled = !systemReady || !sequenceRunning;
+        saveScoreButton.disabled =
+          sequenceRunning || archivedBodyGlyphEvents.length === 0;
+
+        if (!systemReady) {
+          sequenceStatus.textContent = "LOADING";
+        } else if (sequenceRunning) {
+          sequenceStatus.textContent = "RECORDING";
+        } else if (archivedBodyGlyphEvents.length > 0) {
+          sequenceStatus.textContent = `STOPPED · ${lastSequenceDuration.toFixed(1)}s`;
+        } else {
+          sequenceStatus.textContent = "READY";
+        }
+      }
+
+      function beginMovementSequence() {
+        if (!systemReady) return;
+        bodyGlyphEvents.length = 0;
+        archivedBodyGlyphEvents.length = 0;
+        lastSequenceDuration = 0;
+        startTime = performance.now();
+        sequenceRunning = true;
+        personTracks.forEach((track) => {
+          track.lastBodyGlyphTime = -Infinity;
+        });
+        sequenceStatus.textContent = "RECORDING · MOVE";
+        updateSequenceControls();
+      }
+
+      function stopMovementSequence() {
+        if (!sequenceRunning) return;
+
+        sequenceRunning = false;
+        lastSequenceDuration = getCurrentSeconds();
+
+        updateSequenceControls();
+      }
 
       async function startCamera() {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -505,38 +633,52 @@
       // --------------------------------
 
       async function loop() {
-        const now = getCurrentSeconds();
+        try {
+          const now = getCurrentSeconds();
 
-        drawScoreBackground(now);
+          drawScoreBackground(now);
 
-        if (poseReady && detector) {
-          try {
-            const poses = await detector.estimatePoses(video, {
-              flipHorizontal: true,
-              maxPoses: MAX_PEOPLE,
-            });
+          if (poseReady && detector) {
+            try {
+              const poses = await detector.estimatePoses(video, {
+                flipHorizontal: true,
+                maxPoses: MAX_PEOPLE,
+              });
 
-            if (poses.length > 0) {
-              updateTracksFromPoses(poses, now);
-              drawCameraPoseOverlay(poses);
-            } else {
-              cleanupPersonTracks(now);
-              clearCameraPoseOverlay();
+              if (poses.length > 0) {
+                updateTracksFromPoses(poses, now);
+                drawCameraPoseOverlay(poses);
+                if (sequenceRunning) {
+                  sequenceStatus.textContent = "RECORDING · MOVE";
+                }
+              } else {
+                cleanupPersonTracks(now);
+                clearCameraPoseOverlay();
+                if (sequenceRunning) {
+                  sequenceStatus.textContent = "RECORDING · NO POSE";
+                }
+              }
+            } catch (error) {
+              console.error("estimatePoses error", error);
+              sequenceStatus.textContent = "POSE ERROR";
             }
-          } catch (error) {
-            console.error("estimatePoses error", error);
           }
+
+          drawTrajectoryLines(now);
+          drawBodyGlyphEvents(now);
+          drawTopFadeOverlay();
+          drawAlienSignalTitle(getScoreRect());
+          drawPlayhead();
+          drawLegendBar(getScoreRect());
+          updateGlobalSound();
+
+          requestAnimationFrame(loop);
+        } catch (error) {
+          console.error("loop crashed", error);
+          sequenceStatus.textContent = "LOOP ERROR";
+          startButton.style.display = "block";
+          startButton.textContent = "ERROR - CHECK CONSOLE";
         }
-
-        drawTrajectoryLines(now);
-        drawBodyGlyphEvents(now);
-        drawTopFadeOverlay();
-        drawAlienSignalTitle(getScoreRect());
-        drawPlayhead();
-        drawLegendBar(getScoreRect());
-        updateGlobalSound();
-
-        requestAnimationFrame(loop);
       }
 
       function getGlyphRenderState(glyph, now, rect = getScoreRect()) {
@@ -874,13 +1016,17 @@
         ctx.translate(x, y);
         ctx.rotate((glyph.spin || 0) * age * 0.16);
         ctx.globalAlpha = alpha;
-        ctx.filter = `blur(${options.blurPx || 0}px)`;
+        // top-level blur occasionally created muddy dark halos when multiple soft layers overlapped.
+        // keep the per-shape soft glow, but reset the canvas state here.
+        ctx.filter = "none";
+        ctx.shadowBlur = 0;
+        ctx.shadowColor = "rgba(0,0,0,0)";
 
         if (p.head.active) {
           drawMiniHead(
             pos.head.x,
             pos.head.y,
-            unit * 0.14 * (0.82 + p.head.level * 0.72),
+            unit * 0.135 * (0.8 + p.head.level * 0.62),
             DESIGN.colors.head,
             alpha,
             p.head.level,
@@ -891,7 +1037,7 @@
           drawMiniArch(
             pos.shoulderL.x,
             pos.shoulderL.y,
-            unit * 0.27 * (0.88 + p.shoulderL.level * 1.1),
+            unit * 0.2 * (0.82 + p.shoulderL.level * 0.72),
             DESIGN.colors.shoulder,
             alpha,
             p.shoulderL.level,
@@ -902,7 +1048,7 @@
           drawMiniArch(
             pos.shoulderR.x,
             pos.shoulderR.y,
-            unit * 0.27 * (0.88 + p.shoulderR.level * 1.1),
+            unit * 0.2 * (0.82 + p.shoulderR.level * 0.72),
             DESIGN.colors.shoulder,
             alpha,
             p.shoulderR.level,
@@ -913,7 +1059,7 @@
           drawMiniElbow(
             pos.elbowL.x,
             pos.elbowL.y,
-            unit * 0.32 * (0.9 + p.elbowL.level * 1.35),
+            unit * 0.22 * (0.84 + p.elbowL.level * 0.85),
             "L",
             DESIGN.colors.elbow,
             alpha,
@@ -925,7 +1071,7 @@
           drawMiniElbow(
             pos.elbowR.x,
             pos.elbowR.y,
-            unit * 0.32 * (0.9 + p.elbowR.level * 1.35),
+            unit * 0.22 * (0.84 + p.elbowR.level * 0.85),
             "R",
             DESIGN.colors.elbow,
             alpha,
@@ -937,7 +1083,7 @@
           drawMiniDisc(
             pos.handL.x,
             pos.handL.y,
-            unit * 0.25 * (0.86 + p.handL.level * 1.25),
+            unit * 0.18 * (0.8 + p.handL.level * 0.78),
             "L",
             DESIGN.colors.hand,
             alpha,
@@ -949,7 +1095,7 @@
           drawMiniDisc(
             pos.handR.x,
             pos.handR.y,
-            unit * 0.25 * (0.86 + p.handR.level * 1.25),
+            unit * 0.18 * (0.8 + p.handR.level * 0.78),
             "R",
             DESIGN.colors.hand,
             alpha,
@@ -961,7 +1107,7 @@
           drawMiniTwin(
             pos.hip.x,
             pos.hip.y,
-            unit * 0.3 * (0.9 + p.hip.level * 1.2),
+            unit * 0.21 * (0.82 + p.hip.level * 0.72),
             DESIGN.colors.hip,
             alpha,
             p.hip.level,
@@ -972,7 +1118,7 @@
           drawMiniDome(
             pos.kneeL.x,
             pos.kneeL.y,
-            unit * 0.25 * (0.9 + p.kneeL.level * 1.15),
+            unit * 0.18 * (0.82 + p.kneeL.level * 0.75),
             DESIGN.colors.knee,
             alpha,
             p.kneeL.level,
@@ -983,7 +1129,7 @@
           drawMiniDome(
             pos.kneeR.x,
             pos.kneeR.y,
-            unit * 0.25 * (0.9 + p.kneeR.level * 1.15),
+            unit * 0.18 * (0.82 + p.kneeR.level * 0.75),
             DESIGN.colors.knee,
             alpha,
             p.kneeR.level,
@@ -994,7 +1140,7 @@
           drawMiniPoint(
             pos.footL.x,
             pos.footL.y,
-            unit * 0.26 * (0.88 + p.footL.level * 1.2),
+            unit * 0.18 * (0.82 + p.footL.level * 0.78),
             "L",
             DESIGN.colors.foot,
             alpha,
@@ -1006,7 +1152,7 @@
           drawMiniPoint(
             pos.footR.x,
             pos.footR.y,
-            unit * 0.26 * (0.88 + p.footR.level * 1.2),
+            unit * 0.18 * (0.82 + p.footR.level * 0.78),
             "R",
             DESIGN.colors.foot,
             alpha,
@@ -1024,7 +1170,7 @@
       function applyMiniStyle(colorHex, alpha, level) {
         const c = hexToRgb(colorHex);
         ctx.shadowColor = `rgba(${c.r},${c.g},${c.b},${0.22 + level * 0.18})`;
-        ctx.shadowBlur = 20 + level * 26;
+        ctx.shadowBlur = 12 + level * 14;
         ctx.strokeStyle = `rgba(255,255,255,0)`;
         ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},1)`;
         ctx.lineWidth = 0;
@@ -1052,13 +1198,13 @@
 
       function fillSoftShape(drawShape, colorHex, alpha, level, glowSize = 20) {
         const c = hexToRgb(colorHex);
-        const coreAlpha = Math.min(1, 0.18 + alpha * 1.35);
+        const coreAlpha = Math.min(1, 0.28 + alpha * 1.15);
 
         // soft blurry outer edge
         ctx.save();
-        ctx.filter = `blur(${7 + level * 5}px)`;
+        ctx.filter = `blur(${5 + level * 3}px)`;
         ctx.shadowColor = `rgba(${c.r},${c.g},${c.b},${0.18 + level * 0.14})`;
-        ctx.shadowBlur = 24 + level * 20;
+        ctx.shadowBlur = 14 + level * 12;
         ctx.fillStyle = makeSoftGradient(
           0,
           0,
@@ -1068,7 +1214,7 @@
           level,
         );
         ctx.beginPath();
-        drawShape(1.05);
+        drawShape(1.03);
         ctx.fill();
         ctx.restore();
 
@@ -1541,7 +1687,7 @@
           track.lastSeen = now;
 
           updateJointsFromPose(pose, now, track.joints);
-          createBodyGlyphEvent(now, track);
+          if (sequenceRunning) createBodyGlyphEvent(now, track);
         });
 
         cleanupPersonTracks(now);
@@ -1651,10 +1797,14 @@
         }
 
         const threshold = getLaneThresholdFromJoint(name);
+        const visibleLevel = sequenceRunning
+          ? Math.max(joint.level, threshold * 1.15)
+          : joint.level;
 
         return {
-          active: joint.level > threshold,
-          level: joint.level,
+          // 기록 중에는 "움직임이 아주 작아도" 인식된 관절이 그래픽 스코어에 찍히게 함.
+          active: sequenceRunning ? joint.visible : joint.level > threshold,
+          level: visibleLevel,
           direction: joint.direction,
           x: joint.x / width,
           y: joint.y / height,
@@ -1770,9 +1920,9 @@
           parts.footL.level +
           parts.footR.level;
 
-        const avgEnergy = energy / 12;
+        const avgEnergy = Math.max(energy / 12, 0.045);
 
-        if (avgEnergy < 0.055) return;
+        if (avgEnergy < 0.012) return;
 
         const motion = getGlyphMotionSignature(parts, track, avgEnergy);
 
@@ -1792,6 +1942,7 @@
         };
 
         bodyGlyphEvents.push(glyph);
+        archivedBodyGlyphEvents.push(glyph);
         playBodyGlyphSound(glyph);
 
         track.lastBodyGlyphTime = now;
@@ -2168,6 +2319,59 @@
       // Drawing graphic score
       // --------------------------------
 
+      function drawScoreBackground(now) {
+        ctx.save();
+
+        // White base.
+        ctx.fillStyle = DESIGN.ground;
+        ctx.fillRect(0, 0, width, height);
+
+        const rect = getScoreRect();
+
+        // Soft stair-like spatial field.
+        ctx.strokeStyle = "rgba(16,17,20,0.055)";
+        ctx.lineWidth = 1;
+
+        const stepH = 38;
+        const stepW = 86;
+
+        for (let y = rect.top + 20; y < rect.bottom; y += stepH) {
+          ctx.beginPath();
+
+          let x = rect.left;
+          ctx.moveTo(x, y);
+
+          while (x < rect.right) {
+            ctx.lineTo(Math.min(x + stepW * 0.55, rect.right), y);
+            ctx.lineTo(
+              Math.min(x + stepW * 0.55, rect.right),
+              y + stepH * 0.48,
+            );
+            x += stepW;
+            ctx.lineTo(Math.min(x, rect.right), y + stepH * 0.48);
+          }
+
+          ctx.stroke();
+        }
+
+        // Subtle vertical time guide.
+        ctx.strokeStyle = DESIGN.grid;
+        ctx.lineWidth = 1;
+
+        for (let x = rect.left; x <= rect.right; x += 72) {
+          ctx.beginPath();
+          ctx.moveTo(x, rect.top);
+          ctx.lineTo(x, rect.bottom);
+          ctx.stroke();
+        }
+
+        // Almost invisible score boundary.
+        ctx.strokeStyle = "rgba(16,17,20,0.06)";
+        ctx.strokeRect(rect.left, rect.top, rect.width, rect.height);
+
+        ctx.restore();
+      }
+
       function getScoreRect() {
         return {
           left: leftMargin,
@@ -2204,102 +2408,733 @@
         return x;
       }
 
-      function drawAlienSignalTitle(rect) {
-        const label = "Alien Signal";
-        const titleX = rect.left + 6;
-        const titleY = 12;
-        const fontSize = Math.max(40, Math.min(72, width * 0.058));
-        const font = `900 ${fontSize}px Arial Black, IBM Plex Sans, system-ui, sans-serif`;
+      async function saveLongScoreImage() {
+        if (sequenceRunning || archivedBodyGlyphEvents.length === 0) return;
 
-        const measureCanvas = document.createElement("canvas");
-        const measureCtx = measureCanvas.getContext("2d");
-        measureCtx.font = font;
-        const measuredWidth = measureCtx.measureText(label).width;
+        const duration = Math.max(
+          lastSequenceDuration,
+          archivedBodyGlyphEvents[archivedBodyGlyphEvents.length - 1]?.time ||
+            0,
+          1,
+        );
 
-        const temp = document.createElement("canvas");
-        const pad = 28;
-        temp.width = Math.ceil(measuredWidth + pad * 2);
-        temp.height = Math.ceil(fontSize * 1.5 + pad * 2);
-        const tctx = temp.getContext("2d");
+        const exportWidth = 1600;
+        let pxPerSecond = 180;
+        let headerH = 220;
+        let footerH = 170;
+        let exportHeight = Math.round(
+          headerH + duration * pxPerSecond + footerH,
+        );
+        const maxHeight = 14000;
+        if (exportHeight > maxHeight) {
+          pxPerSecond = Math.max(
+            70,
+            (maxHeight - headerH - footerH) / duration,
+          );
+          exportHeight = Math.round(headerH + duration * pxPerSecond + footerH);
+        }
 
-        tctx.clearRect(0, 0, temp.width, temp.height);
-        tctx.font = font;
-        tctx.textAlign = "left";
-        tctx.textBaseline = "middle";
+        const exportCanvas = document.createElement("canvas");
+        exportCanvas.width = exportWidth;
+        exportCanvas.height = exportHeight;
+        const rctx = exportCanvas.getContext("2d");
 
-        const grad = tctx.createLinearGradient(0, 0, temp.width, 0);
-        grad.addColorStop(0, "#FF6B3D");
-        grad.addColorStop(0.38, "#FF6E96");
-        grad.addColorStop(0.72, "#B46AE1");
-        grad.addColorStop(1, "#7A96FF");
-        tctx.fillStyle = grad;
-        tctx.fillText(label, pad, temp.height * 0.52);
+        const scoreRect = {
+          left: 88,
+          top: headerH,
+          width: exportWidth - 176,
+          height: exportHeight - headerH - footerH,
+        };
+        scoreRect.right = scoreRect.left + scoreRect.width;
+        scoreRect.bottom = scoreRect.top + scoreRect.height;
 
-        // soft blurred echoes to create a hazy alien-signal feel instead of pixelated slices
-        ctx.save();
-        ctx.globalAlpha = 0.14;
-        ctx.filter = "blur(12px)";
-        ctx.drawImage(temp, titleX - 2, titleY + 1);
-        ctx.drawImage(temp, titleX + 6, titleY + 2);
-        ctx.drawImage(temp, titleX + 12, titleY + 3);
-        ctx.restore();
+        const clampLocal = (v, a, b) => Math.max(a, Math.min(b, v));
+        const hexToRgbLocal = (hex) => {
+          const normalized = hex.replace("#", "");
+          const bigint = parseInt(normalized, 16);
+          return {
+            r: (bigint >> 16) & 255,
+            g: (bigint >> 8) & 255,
+            b: bigint & 255,
+          };
+        };
 
-        ctx.save();
-        ctx.globalAlpha = 0.22;
-        ctx.filter = "blur(4px)";
-        ctx.drawImage(temp, titleX + 2, titleY);
-        ctx.drawImage(temp, titleX + 8, titleY + 1);
-        ctx.restore();
+        const beginSoftFill = (
+          drawShape,
+          colorHex,
+          alpha,
+          level,
+          glowSize = 20,
+        ) => {
+          const c = hexToRgbLocal(colorHex);
+          const coreAlpha = Math.min(1, 0.28 + alpha * 1.15);
 
-        // smooth offset copies for signal distortion, but without blocky pixel breakup
-        ctx.save();
-        ctx.globalAlpha = 0.34;
-        ctx.drawImage(temp, titleX + 3, titleY);
-        ctx.globalAlpha = 0.22;
-        ctx.drawImage(temp, titleX + 10, titleY + 1);
-        ctx.restore();
+          rctx.save();
+          rctx.filter = `blur(${5 + level * 3}px)`;
+          rctx.shadowColor = `rgba(${c.r},${c.g},${c.b},${0.18 + level * 0.14})`;
+          rctx.shadowBlur = 14 + level * 12;
+          const grad = rctx.createRadialGradient(
+            0,
+            0,
+            0,
+            0,
+            0,
+            glowSize * 1.75,
+          );
+          grad.addColorStop(
+            0,
+            `rgba(${c.r},${c.g},${c.b},${Math.min(1, 0.98 * alpha)})`,
+          );
+          grad.addColorStop(
+            0.36,
+            `rgba(${c.r},${c.g},${c.b},${Math.min(1, 0.96 * alpha)})`,
+          );
+          grad.addColorStop(
+            0.66,
+            `rgba(${c.r},${c.g},${c.b},${(0.42 + level * 0.1) * alpha})`,
+          );
+          grad.addColorStop(1, `rgba(${c.r},${c.g},${c.b},0)`);
+          rctx.fillStyle = grad;
+          rctx.beginPath();
+          drawShape(1.03);
+          rctx.fill();
+          rctx.restore();
 
-        // main title
-        ctx.save();
-        ctx.globalAlpha = 0.96;
-        ctx.drawImage(temp, titleX, titleY);
-        ctx.restore();
+          rctx.save();
+          rctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${coreAlpha})`;
+          rctx.beginPath();
+          drawShape(0.98);
+          rctx.fill();
+          rctx.restore();
+        };
+
+        const drawHead = (size, colorHex, alpha, level) => {
+          const c = hexToRgbLocal(colorHex);
+          const rayCount = 18;
+          const innerR = size * 0.42;
+          const outerR = size * 0.92;
+          const rayW = size * 0.11;
+          const coreAlpha = Math.min(1, 0.16 + alpha * 1.28);
+          rctx.save();
+          rctx.filter = `blur(${5 + level * 3}px)`;
+          rctx.lineCap = "round";
+          rctx.strokeStyle = `rgba(${c.r},${c.g},${c.b},${Math.min(1, alpha * 0.52)})`;
+          rctx.lineWidth = rayW * 1.4;
+          for (let i = 0; i < rayCount; i++) {
+            const a = (Math.PI * 2 * i) / rayCount - Math.PI / 2;
+            rctx.beginPath();
+            rctx.moveTo(Math.cos(a) * innerR, Math.sin(a) * innerR);
+            rctx.lineTo(Math.cos(a) * outerR, Math.sin(a) * outerR);
+            rctx.stroke();
+          }
+          rctx.restore();
+          rctx.save();
+          rctx.lineCap = "round";
+          rctx.strokeStyle = `rgba(${c.r},${c.g},${c.b},${coreAlpha})`;
+          rctx.lineWidth = rayW;
+          for (let i = 0; i < rayCount; i++) {
+            const a = (Math.PI * 2 * i) / rayCount - Math.PI / 2;
+            rctx.beginPath();
+            rctx.moveTo(Math.cos(a) * innerR, Math.sin(a) * innerR);
+            rctx.lineTo(Math.cos(a) * outerR, Math.sin(a) * outerR);
+            rctx.stroke();
+          }
+          rctx.restore();
+          beginSoftFill(
+            (m = 1) => {
+              rctx.arc(0, 0, size * 0.42 * m, 0, Math.PI * 2);
+            },
+            colorHex,
+            alpha,
+            level,
+            size * 0.9,
+          );
+        };
+
+        const drawArch = (size, colorHex, alpha, level) =>
+          beginSoftFill(
+            (m = 1) => {
+              rctx.moveTo(-size * m, size * 0.28 * m);
+              rctx.quadraticCurveTo(
+                0,
+                -size * 0.8 * m,
+                size * m,
+                size * 0.28 * m,
+              );
+              rctx.lineTo(size * 0.55 * m, size * 0.28 * m);
+              rctx.quadraticCurveTo(
+                0,
+                -size * 0.35 * m,
+                -size * 0.55 * m,
+                size * 0.28 * m,
+              );
+              rctx.closePath();
+            },
+            colorHex,
+            alpha,
+            level,
+            size * 1.35,
+          );
+
+        const drawElbow = (size, colorHex, alpha, level) =>
+          beginSoftFill(
+            (m = 1) => {
+              const w = size * 1.08 * m;
+              const h = size * 0.72 * m;
+              rctx.moveTo(-w * 0.98, -h * 0.14);
+              rctx.bezierCurveTo(
+                -w * 0.72,
+                -h * 1.0,
+                w * 0.24,
+                -h * 1.08,
+                w * 0.82,
+                -h * 0.38,
+              );
+              rctx.bezierCurveTo(
+                w * 1.12,
+                h * 0.02,
+                w * 0.92,
+                h * 0.72,
+                w * 0.18,
+                h * 0.86,
+              );
+              rctx.bezierCurveTo(
+                -w * 0.54,
+                h * 1.0,
+                -w * 1.08,
+                h * 0.44,
+                -w * 0.98,
+                -h * 0.14,
+              );
+              rctx.closePath();
+            },
+            colorHex,
+            alpha,
+            level,
+            size * 1.6,
+          );
+
+        const drawDisc = (size, colorHex, alpha, level) =>
+          beginSoftFill(
+            (m = 1) => {
+              rctx.arc(0, 0, size * 0.98 * m, 0, Math.PI * 2);
+            },
+            colorHex,
+            alpha,
+            level,
+            size * 1.5,
+          );
+
+        const drawTwin = (size, colorHex, alpha, level) => {
+          const r = size * 0.74;
+          const offset = size * 0.54;
+          beginSoftFill(
+            (m = 1) => {
+              rctx.arc(-offset * m, 0, r * m, 0, Math.PI * 2);
+              rctx.arc(offset * m, 0, r * m, 0, Math.PI * 2);
+            },
+            colorHex,
+            alpha,
+            level,
+            size * 1.55,
+          );
+        };
+
+        const drawDome = (size, colorHex, alpha, level) =>
+          beginSoftFill(
+            (m = 1) => {
+              const w = size * 1.16 * m;
+              const h = size * 0.92 * m;
+              rctx.moveTo(-w, h * 0.34);
+              rctx.bezierCurveTo(
+                -w * 0.92,
+                -h * 0.28,
+                -w * 0.42,
+                -h * 0.92,
+                0,
+                -h * 0.92,
+              );
+              rctx.bezierCurveTo(
+                w * 0.42,
+                -h * 0.92,
+                w * 0.92,
+                -h * 0.28,
+                w,
+                h * 0.34,
+              );
+              rctx.lineTo(-w, h * 0.34);
+              rctx.closePath();
+            },
+            colorHex,
+            alpha,
+            level,
+            size * 1.56,
+          );
+
+        const drawPoint = (size, colorHex, alpha, level) =>
+          beginSoftFill(
+            (m = 1) => {
+              const w = size * 0.98 * m;
+              const h = size * 1.08 * m;
+              rctx.moveTo(0, -h * 1.02);
+              rctx.bezierCurveTo(
+                w * 0.62,
+                -h * 0.7,
+                w * 0.98,
+                -h * 0.02,
+                w * 0.72,
+                h * 0.62,
+              );
+              rctx.quadraticCurveTo(w * 0.34, h * 0.98, 0, h * 0.96);
+              rctx.quadraticCurveTo(-w * 0.34, h * 0.98, -w * 0.72, h * 0.62);
+              rctx.bezierCurveTo(
+                -w * 0.98,
+                -h * 0.02,
+                -w * 0.62,
+                -h * 0.7,
+                0,
+                -h * 1.02,
+              );
+              rctx.closePath();
+            },
+            colorHex,
+            alpha,
+            level,
+            size * 1.6,
+          );
+
+        const drawGlyphLocal = (glyph, x, y, scale, alpha, blurPx = 0) => {
+          const p = glyph.parts;
+          const unit = 76 * scale;
+          const pos = {
+            head: { x: 0, y: -unit * 2.35 },
+            shoulderL: { x: -unit * 0.95, y: -unit * 1.45 },
+            shoulderR: { x: unit * 0.95, y: -unit * 1.45 },
+            elbowL: { x: -unit * 1.5, y: -unit * 0.18 },
+            elbowR: { x: unit * 1.5, y: -unit * 0.18 },
+            handL: { x: -unit * 2.05, y: -unit * 0.65 },
+            handR: { x: unit * 2.05, y: -unit * 0.65 },
+            hip: { x: 0, y: 0 },
+            kneeL: { x: -unit * 0.66, y: unit * 1.15 },
+            kneeR: { x: unit * 0.66, y: unit * 1.15 },
+            footL: { x: -unit * 0.98, y: unit * 2.15 },
+            footR: { x: unit * 0.98, y: unit * 2.15 },
+          };
+
+          rctx.save();
+          rctx.translate(x, y);
+          rctx.globalAlpha = alpha;
+          rctx.filter = `blur(${blurPx}px)`;
+
+          if (p.head.active) {
+            rctx.save();
+            rctx.translate(pos.head.x, pos.head.y);
+            drawHead(
+              unit * 0.135 * (0.8 + p.head.level * 0.62),
+              DESIGN.colors.head,
+              alpha,
+              p.head.level,
+            );
+            rctx.restore();
+          }
+          if (p.shoulderL.active) {
+            rctx.save();
+            rctx.translate(pos.shoulderL.x, pos.shoulderL.y);
+            drawArch(
+              unit * 0.2 * (0.82 + p.shoulderL.level * 0.72),
+              DESIGN.colors.shoulder,
+              alpha,
+              p.shoulderL.level,
+            );
+            rctx.restore();
+          }
+          if (p.shoulderR.active) {
+            rctx.save();
+            rctx.translate(pos.shoulderR.x, pos.shoulderR.y);
+            drawArch(
+              unit * 0.2 * (0.82 + p.shoulderR.level * 0.72),
+              DESIGN.colors.shoulder,
+              alpha,
+              p.shoulderR.level,
+            );
+            rctx.restore();
+          }
+          if (p.elbowL.active) {
+            rctx.save();
+            rctx.translate(pos.elbowL.x, pos.elbowL.y);
+            drawElbow(
+              unit * 0.22 * (0.84 + p.elbowL.level * 0.85),
+              DESIGN.colors.elbow,
+              alpha,
+              p.elbowL.level,
+            );
+            rctx.restore();
+          }
+          if (p.elbowR.active) {
+            rctx.save();
+            rctx.translate(pos.elbowR.x, pos.elbowR.y);
+            drawElbow(
+              unit * 0.22 * (0.84 + p.elbowR.level * 0.85),
+              DESIGN.colors.elbow,
+              alpha,
+              p.elbowR.level,
+            );
+            rctx.restore();
+          }
+          if (p.handL.active) {
+            rctx.save();
+            rctx.translate(pos.handL.x, pos.handL.y);
+            drawDisc(
+              unit * 0.18 * (0.8 + p.handL.level * 0.78),
+              DESIGN.colors.hand,
+              alpha,
+              p.handL.level,
+            );
+            rctx.restore();
+          }
+          if (p.handR.active) {
+            rctx.save();
+            rctx.translate(pos.handR.x, pos.handR.y);
+            drawDisc(
+              unit * 0.18 * (0.8 + p.handR.level * 0.78),
+              DESIGN.colors.hand,
+              alpha,
+              p.handR.level,
+            );
+            rctx.restore();
+          }
+          if (p.hip.active) {
+            rctx.save();
+            rctx.translate(pos.hip.x, pos.hip.y);
+            drawTwin(
+              unit * 0.21 * (0.82 + p.hip.level * 0.72),
+              DESIGN.colors.hip,
+              alpha,
+              p.hip.level,
+            );
+            rctx.restore();
+          }
+          if (p.kneeL.active) {
+            rctx.save();
+            rctx.translate(pos.kneeL.x, pos.kneeL.y);
+            drawDome(
+              unit * 0.18 * (0.82 + p.kneeL.level * 0.75),
+              DESIGN.colors.knee,
+              alpha,
+              p.kneeL.level,
+            );
+            rctx.restore();
+          }
+          if (p.kneeR.active) {
+            rctx.save();
+            rctx.translate(pos.kneeR.x, pos.kneeR.y);
+            drawDome(
+              unit * 0.18 * (0.82 + p.kneeR.level * 0.75),
+              DESIGN.colors.knee,
+              alpha,
+              p.kneeR.level,
+            );
+            rctx.restore();
+          }
+          if (p.footL.active) {
+            rctx.save();
+            rctx.translate(pos.footL.x, pos.footL.y);
+            drawPoint(
+              unit * 0.18 * (0.82 + p.footL.level * 0.78),
+              DESIGN.colors.foot,
+              alpha,
+              p.footL.level,
+            );
+            rctx.restore();
+          }
+          if (p.footR.active) {
+            rctx.save();
+            rctx.translate(pos.footR.x, pos.footR.y);
+            drawPoint(
+              unit * 0.18 * (0.82 + p.footR.level * 0.78),
+              DESIGN.colors.foot,
+              alpha,
+              p.footR.level,
+            );
+            rctx.restore();
+          }
+          rctx.restore();
+        };
+
+        const getLayers = (glyph) => [
+          {
+            id: "head",
+            level: glyph.parts.head.level,
+            color: DESIGN.colors.head,
+          },
+          {
+            id: "shoulder",
+            level:
+              (glyph.parts.shoulderL.level + glyph.parts.shoulderR.level) * 0.5,
+            color: DESIGN.colors.shoulder,
+          },
+          {
+            id: "elbow",
+            level: (glyph.parts.elbowL.level + glyph.parts.elbowR.level) * 0.5,
+            color: DESIGN.colors.elbow,
+          },
+          {
+            id: "hand",
+            level: (glyph.parts.handL.level + glyph.parts.handR.level) * 0.5,
+            color: DESIGN.colors.hand,
+          },
+          { id: "hip", level: glyph.parts.hip.level, color: DESIGN.colors.hip },
+          {
+            id: "knee",
+            level: (glyph.parts.kneeL.level + glyph.parts.kneeR.level) * 0.5,
+            color: DESIGN.colors.knee,
+          },
+          {
+            id: "foot",
+            level: (glyph.parts.footL.level + glyph.parts.footR.level) * 0.5,
+            color: DESIGN.colors.foot,
+          },
+        ];
+
+        const drawStamp = (x, y, radius, colorHex, alpha) => {
+          const c = hexToRgbLocal(colorHex);
+          const grad = rctx.createRadialGradient(x, y, 0, x, y, radius * 1.7);
+          grad.addColorStop(0, `rgba(${c.r},${c.g},${c.b},${alpha})`);
+          grad.addColorStop(0.48, `rgba(${c.r},${c.g},${c.b},${alpha * 0.62})`);
+          grad.addColorStop(1, `rgba(${c.r},${c.g},${c.b},0)`);
+          rctx.fillStyle = grad;
+          rctx.beginPath();
+          rctx.arc(x, y, radius * 1.7, 0, Math.PI * 2);
+          rctx.fill();
+        };
+
+        const pointOnQuad = (t, p0, p1, p2) => {
+          const mt = 1 - t;
+          return {
+            x: mt * mt * p0.x + 2 * mt * t * p1.x + t * t * p2.x,
+            y: mt * mt * p0.y + 2 * mt * t * p1.y + t * t * p2.y,
+          };
+        };
+
+        const positioned = archivedBodyGlyphEvents
+          .map((glyph) => {
+            const x =
+              scoreRect.left +
+              scoreRect.width * (0.14 + glyph.bodyX * 0.72) +
+              (glyph.motionDriftX || 0) * 24;
+            const y =
+              scoreRect.top + (glyph.time / duration) * scoreRect.height;
+            return { glyph, x, y };
+          })
+          .sort(
+            (a, b) =>
+              a.glyph.personId - b.glyph.personId ||
+              a.glyph.time - b.glyph.time,
+          );
+
+        rctx.fillStyle = "#ffffff";
+        rctx.fillRect(0, 0, exportWidth, exportHeight);
+
+        const topGrad = rctx.createLinearGradient(0, 0, 0, headerH + 80);
+        topGrad.addColorStop(0, "rgba(255,255,255,1)");
+        topGrad.addColorStop(0.42, "rgba(255,255,255,0.98)");
+        topGrad.addColorStop(0.82, "rgba(255,255,255,0.42)");
+        topGrad.addColorStop(1, "rgba(255,255,255,0)");
+        rctx.fillStyle = topGrad;
+        rctx.fillRect(0, 0, exportWidth, headerH + 80);
+
+        rctx.font =
+          '600 42px Pretendard, "Noto Sans KR", "Noto Sans", Arial, sans-serif';
+        rctx.fillStyle = "rgba(18,18,18,0.9)";
+        rctx.textAlign = "center";
+        rctx.textBaseline = "top";
+        rctx.fillText("Ritual on the Stairs", exportWidth * 0.5, 56);
+
+        rctx.font =
+          '500 18px Pretendard, "Noto Sans KR", "Noto Sans", Arial, sans-serif';
+        rctx.fillStyle = "rgba(18,18,18,0.44)";
+        rctx.fillText(`${duration.toFixed(1)} sec`, exportWidth * 0.5, 108);
+
+        // guide lines
+        rctx.strokeStyle = "rgba(16,17,20,0.035)";
+        rctx.lineWidth = 1;
+        for (let y = scoreRect.top; y <= scoreRect.bottom; y += 28) {
+          rctx.beginPath();
+          rctx.moveTo(scoreRect.left, y);
+          rctx.lineTo(scoreRect.right, y);
+          rctx.stroke();
+        }
+
+        // trajectories
+        const byPerson = new Map();
+        positioned.forEach((item) => {
+          if (!byPerson.has(item.glyph.personId))
+            byPerson.set(item.glyph.personId, []);
+          byPerson.get(item.glyph.personId).push(item);
+        });
+
+        byPerson.forEach((items) => {
+          if (items.length < 2) return;
+          for (let i = 1; i < items.length; i++) {
+            const prev = items[i - 1];
+            const curr = items[i];
+            const energy = (prev.glyph.energy + curr.glyph.energy) * 0.5;
+            const alpha = clampLocal(0.18 + energy * 0.28, 0.18, 0.58);
+            const control = {
+              x:
+                (prev.x + curr.x) * 0.5 +
+                ((prev.glyph.motionVecX || 0) + (curr.glyph.motionVecX || 0)) *
+                  10,
+              y:
+                (prev.y + curr.y) * 0.5 +
+                ((prev.glyph.motionVecY || 0) + (curr.glyph.motionVecY || 0)) *
+                  10,
+            };
+            const steps = Math.max(
+              12,
+              Math.ceil(Math.hypot(curr.x - prev.x, curr.y - prev.y) / 18),
+            );
+            const layerMap = new Map();
+            getLayers(prev.glyph).forEach((layer) =>
+              layerMap.set(layer.id, {
+                ...layer,
+                prevLevel: layer.level,
+                currLevel: 0,
+              }),
+            );
+            getLayers(curr.glyph).forEach((layer) => {
+              if (!layerMap.has(layer.id))
+                layerMap.set(layer.id, {
+                  ...layer,
+                  prevLevel: 0,
+                  currLevel: layer.level,
+                });
+              else layerMap.get(layer.id).currLevel = layer.level;
+            });
+            const activeLayers = [...layerMap.values()]
+              .map((layer) => ({
+                ...layer,
+                avgLevel: (layer.prevLevel + layer.currLevel) * 0.5,
+              }))
+              .filter((layer) => layer.avgLevel > 0.08)
+              .sort((a, b) => b.avgLevel - a.avgLevel)
+              .slice(0, 3);
+            for (let s = 0; s <= steps; s++) {
+              const t = s / steps;
+              const p = pointOnQuad(t, { x: prev.x, y: prev.y }, control, {
+                x: curr.x,
+                y: curr.y,
+              });
+              const baseR = 5 + energy * 10;
+              activeLayers.forEach((layer, index) => {
+                const level =
+                  layer.prevLevel + (layer.currLevel - layer.prevLevel) * t;
+                const layerRadius = baseR * (0.38 + level * 0.64);
+                const layerAlpha = alpha * (0.58 - index * 0.1);
+                drawStamp(p.x, p.y, layerRadius, layer.color, layerAlpha);
+              });
+            }
+          }
+        });
+
+        // glyphs
+        positioned.forEach((item) => {
+          const trailSteps = 2;
+          const baseScale = 0.84 + item.glyph.energy * 1.1;
+          const baseAlpha = clampLocal(
+            0.3 + item.glyph.energy * 0.82,
+            0.22,
+            0.95,
+          );
+          for (let i = trailSteps; i >= 1; i--) {
+            const t = i / trailSteps;
+            drawGlyphLocal(
+              item.glyph,
+              item.x -
+                (item.glyph.motionVecX || 0) *
+                  (item.glyph.trailLength || 22) *
+                  t,
+              item.y -
+                (item.glyph.motionVecY || -0.2) *
+                  (item.glyph.trailLength || 22) *
+                  t,
+              baseScale * (1 + t * 0.03),
+              baseAlpha * (0.08 + (1 - t) * 0.16),
+              10 + t * 6,
+            );
+          }
+          drawGlyphLocal(item.glyph, item.x, item.y, baseScale, baseAlpha, 4);
+        });
+
+        // footer legend
+        const legendY = exportHeight - 92;
+        const items = [
+          ["HEAD", DESIGN.colors.head],
+          ["SHOULDER", DESIGN.colors.shoulder],
+          ["ELBOW", DESIGN.colors.elbow],
+          ["HAND", DESIGN.colors.hand],
+          ["HIP", DESIGN.colors.hip],
+          ["KNEE", DESIGN.colors.knee],
+          ["FOOT", DESIGN.colors.foot],
+        ];
+        rctx.font =
+          '600 14px Pretendard, "Noto Sans KR", "Noto Sans", Arial, sans-serif';
+        items.forEach((item, index) => {
+          const x = 100 + index * 200;
+          const c = hexToRgbLocal(item[1]);
+          rctx.fillStyle = `rgba(${c.r},${c.g},${c.b},0.92)`;
+          rctx.beginPath();
+          rctx.arc(x, legendY, 9, 0, Math.PI * 2);
+          rctx.fill();
+          rctx.fillStyle = "rgba(18,18,18,0.72)";
+          rctx.fillText(item[0], x + 18, legendY + 5);
+        });
+
+        const link = document.createElement("a");
+        link.download = `ritual_on_the_stairs_score_${Date.now()}.png`;
+        link.href = exportCanvas.toDataURL("image/png");
+        link.click();
       }
 
-      function drawScoreBackground(now) {
-        ctx.fillStyle = DESIGN.ground;
-        ctx.fillRect(0, 0, width, height);
+      function drawAlienSignalTitle(rect) {
+        const subtitle = "Ritual on the Stairs";
+        const titleX = 32;
+        const titleY = 28;
+        const subSize = Math.max(20, Math.min(30, width * 0.018));
+        const subFont = `600 ${subSize}px Pretendard, "Noto Sans KR", "Noto Sans", Arial, sans-serif`;
 
-        const rect = getScoreRect();
+        ctx.save();
+        ctx.textAlign = "left";
+        ctx.textBaseline = "top";
 
-        const rows = 108;
-        for (let i = 0; i <= rows; i++) {
-          const y = rect.top + (rect.height / rows) * i;
-          ctx.strokeStyle = "rgba(16,17,20,0.045)";
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(rect.left, y);
-          ctx.lineTo(rect.right, y);
-          ctx.stroke();
-        }
+        const bandBottom = 180;
+        const bg = ctx.createLinearGradient(0, 0, 0, bandBottom);
+        bg.addColorStop(0, "rgba(255,255,255,1)");
+        bg.addColorStop(0.42, "rgba(255,255,255,0.98)");
+        bg.addColorStop(0.78, "rgba(255,255,255,0.72)");
+        bg.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, width, bandBottom);
+
+        ctx.font = subFont;
+        ctx.fillStyle = "rgba(18,18,18,0.88)";
+        ctx.fillText(subtitle, titleX, titleY);
+        ctx.restore();
       }
 
       function drawTopFadeOverlay() {
         const rect = getScoreRect();
-        const solidBandH = Math.max(96, rect.top - 4);
-        const fadeEndY = rect.top + Math.min(220, rect.height * 0.3);
+        const fadeEndY = rect.top + Math.min(230, rect.height * 0.26);
 
         ctx.save();
-        ctx.fillStyle = "rgba(255,255,255,0.985)";
-        ctx.fillRect(0, 0, width, solidBandH);
-
-        const grad = ctx.createLinearGradient(0, solidBandH, 0, fadeEndY);
-        grad.addColorStop(0, "rgba(255,255,255,0.985)");
-        grad.addColorStop(0.28, "rgba(255,255,255,0.88)");
-        grad.addColorStop(0.62, "rgba(255,255,255,0.42)");
+        const grad = ctx.createLinearGradient(0, 0, 0, fadeEndY);
+        grad.addColorStop(0, "rgba(255,255,255,1)");
+        grad.addColorStop(0.28, "rgba(255,255,255,0.98)");
+        grad.addColorStop(0.58, "rgba(255,255,255,0.82)");
+        grad.addColorStop(0.82, "rgba(255,255,255,0.34)");
         grad.addColorStop(1, "rgba(255,255,255,0)");
         ctx.fillStyle = grad;
-        ctx.fillRect(0, solidBandH, width, fadeEndY - solidBandH);
+        ctx.fillRect(0, 0, width, fadeEndY);
         ctx.restore();
       }
 
@@ -2308,7 +3143,10 @@
         const panelH = PANEL_HEIGHT;
         const panelX = 0;
         const panelW = width;
-        const itemWidth = panelW / 7;
+        const contentInset = 36;
+        const contentX = panelX + contentInset;
+        const contentW = panelW - contentInset * 2;
+        const itemWidth = contentW / 7;
         const items = [
           {
             id: "head",
@@ -2357,33 +3195,39 @@
         ctx.save();
         ctx.fillStyle = DESIGN.panel;
         ctx.fillRect(panelX, panelY, panelW, panelH);
-        ctx.strokeStyle = "rgba(16,17,20,0.14)";
+        ctx.strokeStyle = "rgba(16,17,20,0.12)";
         ctx.lineWidth = 1;
         ctx.strokeRect(panelX, panelY, panelW, panelH);
 
         items.forEach((item, index) => {
-          const x0 = panelX + index * itemWidth;
-          const cx = x0 + itemWidth * 0.08;
-          const cy = panelY + panelH * 0.45;
+          const x0 = contentX + index * itemWidth;
+          const symbolX = x0 + 26;
+          const symbolY = panelY + panelH * 0.52;
+          const textX = x0 + 76;
+          const labelY = panelY + 28;
+          const descY = panelY + 48;
 
           if (index > 0) {
-            ctx.strokeStyle = "rgba(16,17,20,0.12)";
+            ctx.strokeStyle = "rgba(16,17,20,0.10)";
             ctx.beginPath();
-            ctx.moveTo(x0, panelY + 12);
-            ctx.lineTo(x0, panelY + panelH - 12);
+            ctx.moveTo(x0, panelY + 10);
+            ctx.lineTo(x0, panelY + panelH - 10);
             ctx.stroke();
           }
 
-          drawLegendSymbol(item.id, cx + 18, cy - 2, item.color);
+          drawLegendSymbol(item.id, symbolX, symbolY, item.color);
 
-          ctx.fillStyle = "rgba(16,17,20,0.9)";
-          ctx.font = "600 11px IBM Plex Sans, system-ui";
+          ctx.fillStyle = "rgba(16,17,20,0.90)";
+          ctx.font =
+            '600 11px Pretendard, "Noto Sans KR", "Noto Sans", Arial, sans-serif';
           ctx.textAlign = "left";
-          ctx.fillText(item.label, cx + 38, panelY + 30);
+          ctx.textBaseline = "middle";
+          ctx.fillText(item.label, textX, labelY);
 
           ctx.fillStyle = "rgba(16,17,20,0.52)";
-          ctx.font = "10px IBM Plex Sans, system-ui";
-          ctx.fillText(item.desc, cx + 38, panelY + 47);
+          ctx.font =
+            '500 10px Pretendard, "Noto Sans KR", "Noto Sans", Arial, sans-serif';
+          ctx.fillText(item.desc, textX, descY);
         });
         ctx.restore();
       }
@@ -2391,22 +3235,21 @@
       function drawLegendSymbol(id, x, y, colorHex) {
         const alpha = 1;
         const level = 0.9;
-        const size = 18;
 
         if (id === "head") {
-          drawMiniHead(x, y, size, colorHex, alpha, level);
+          drawMiniHead(x, y, 24, colorHex, alpha, level);
         } else if (id === "shoulder") {
-          drawMiniArch(x, y, size, colorHex, alpha, level);
+          drawMiniArch(x, y, 16, colorHex, alpha, level);
         } else if (id === "elbow") {
-          drawMiniElbow(x, y, size, "R", colorHex, alpha, level);
+          drawMiniElbow(x, y, 15, "R", colorHex, alpha, level);
         } else if (id === "hand") {
-          drawMiniDisc(x, y, size, "R", colorHex, alpha, level);
+          drawMiniDisc(x, y, 16, "R", colorHex, alpha, level);
         } else if (id === "knee") {
-          drawMiniDome(x, y, size, colorHex, alpha, level);
+          drawMiniDome(x, y, 15, colorHex, alpha, level);
         } else if (id === "foot") {
-          drawMiniPoint(x, y, size, "R", colorHex, alpha, level);
+          drawMiniPoint(x, y, 15, "R", colorHex, alpha, level);
         } else if (id === "hip") {
-          drawMiniTwin(x, y, size, colorHex, alpha, level);
+          drawMiniTwin(x, y, 15, colorHex, alpha, level);
         }
       }
 

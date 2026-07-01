@@ -663,6 +663,8 @@
         lastSequenceDuration = 0;
         startTime = performance.now();
         sequenceRunning = true;
+        smoothedSoundEnergy = 0;
+        startContinuousSoundForMovement();
         personTracks.forEach((track) => {
           track.lastBodyGlyphTime = -Infinity;
         });
@@ -676,6 +678,7 @@
         sequenceRunning = false;
         activeScoreMode = "idle";
         lastSequenceDuration = getCurrentSeconds();
+        fadeContinuousSoundToSilence();
 
         updateSequenceControls();
       }
@@ -721,25 +724,29 @@
       async function startAudio() {
         await Tone.start();
         await Tone.context.resume();
-        drone.start();
-        breathOsc.start();
-        shimmerOsc.start();
-        airNoise.start();
-        squealOsc.start();
-        ringOsc.start();
 
-        droneGain.gain.value = 0.032;
-        breathGain.gain.value = 0.018;
-        shimmerGain.gain.value = 0.012;
-        airGain.gain.value = 0.014;
-        squealGain.gain.value = 0.004;
-        ringGain.gain.value = 0.004;
-        filter.frequency.value = 1050;
-        reverb.wet.value = 0.7;
-        delay.wet.value = 0.22;
-        delay.feedback.value = 0.32;
+        // Oscillators can be started after the user's first click,
+        // but every gain must stay at 0 until an explicit sequence/playback starts.
+        if (drone.state !== "started") drone.start();
+        if (breathOsc.state !== "started") breathOsc.start();
+        if (shimmerOsc.state !== "started") shimmerOsc.start();
+        if (airNoise.state !== "started") airNoise.start();
+        if (squealOsc.state !== "started") squealOsc.start();
+        if (ringOsc.state !== "started") ringOsc.start();
 
-        signalSynth.triggerAttackRelease("E4", "1n", Tone.now(), 0.12);
+        droneGain.gain.value = 0;
+        breathGain.gain.value = 0;
+        shimmerGain.gain.value = 0;
+        airGain.gain.value = 0;
+        squealGain.gain.value = 0;
+        ringGain.gain.value = 0;
+        filter.frequency.value = 900;
+        reverb.wet.value = 0.68;
+        delay.wet.value = 0.16;
+        delay.feedback.value = 0.22;
+
+        // Do not play any confirmation tone here.
+        // Sound should happen only during movement recording or image-score playback.
         audioReady = true;
       }
 
@@ -1613,7 +1620,7 @@
       }
 
       function playBodyGlyphSound(glyph) {
-        if (!audioReady) return;
+        if (!audioReady || !sequenceRunning || imageScorePlaying) return;
 
         const now = Tone.now();
         const energy = glyph.energy;
@@ -2387,6 +2394,10 @@
       }
 
       function updateGlobalSound() {
+        // Live body sound is allowed only while recording a movement sequence.
+        // Before START MOVE SEQUENCE and after STOP, the page must stay silent.
+        if (!audioReady || !sequenceRunning || imageScorePlaying) return;
+
         let total = 0;
         let count = 0;
         let verticalFlow = 0;
@@ -2782,31 +2793,50 @@
         updateSequenceControls();
       }
 
+      function startContinuousSoundForMovement() {
+        if (!audioReady) return;
+        droneGain.gain.cancelScheduledValues(Tone.now());
+        breathGain.gain.cancelScheduledValues(Tone.now());
+        shimmerGain.gain.cancelScheduledValues(Tone.now());
+        airGain.gain.cancelScheduledValues(Tone.now());
+        squealGain.gain.cancelScheduledValues(Tone.now());
+        ringGain.gain.cancelScheduledValues(Tone.now());
+
+        droneGain.gain.rampTo(0.018, 0.22);
+        breathGain.gain.rampTo(0.004, 0.22);
+        shimmerGain.gain.rampTo(0.006, 0.3);
+        airGain.gain.rampTo(0.006, 0.3);
+        squealGain.gain.rampTo(0.001, 0.3);
+        ringGain.gain.rampTo(0.001, 0.3);
+        filter.frequency.rampTo(720, 0.25);
+        delay.feedback.rampTo(0.22, 0.25);
+        delay.wet.rampTo(0.16, 0.25);
+        reverb.wet.rampTo(0.68, 0.25);
+      }
+
       function resetContinuousSoundForImageScore() {
         if (!audioReady) return;
-        droneGain.gain.rampTo(0.006, 0.18);
-        breathGain.gain.rampTo(0.002, 0.18);
-        shimmerGain.gain.rampTo(0.004, 0.18);
-        airGain.gain.rampTo(0.004, 0.18);
-        squealGain.gain.rampTo(0.001, 0.18);
-        ringGain.gain.rampTo(0.001, 0.18);
-        filter.frequency.rampTo(900, 0.18);
-        delay.feedback.rampTo(0.22, 0.18);
-        delay.wet.rampTo(0.16, 0.18);
-        reverb.wet.rampTo(0.68, 0.18);
+        fadeContinuousSoundToSilence(0.12);
+        filter.frequency.rampTo(900, 0.12);
+        delay.feedback.rampTo(0.22, 0.12);
+        delay.wet.rampTo(0.16, 0.12);
+        reverb.wet.rampTo(0.68, 0.12);
       }
 
       function fadeContinuousSoundToIdle() {
+        fadeContinuousSoundToSilence();
+      }
+
+      function fadeContinuousSoundToSilence(time = 0.35) {
         if (!audioReady) return;
-        droneGain.gain.rampTo(0.018, 0.45);
-        breathGain.gain.rampTo(0.003, 0.45);
-        shimmerGain.gain.rampTo(0.006, 0.45);
-        airGain.gain.rampTo(0.006, 0.45);
-        squealGain.gain.rampTo(0.001, 0.45);
-        ringGain.gain.rampTo(0.001, 0.45);
-        filter.frequency.rampTo(720, 0.45);
-        delay.feedback.rampTo(0.22, 0.45);
-        delay.wet.rampTo(0.16, 0.45);
+        droneGain.gain.rampTo(0, time);
+        breathGain.gain.rampTo(0, time);
+        shimmerGain.gain.rampTo(0, time);
+        airGain.gain.rampTo(0, time);
+        squealGain.gain.rampTo(0, time);
+        ringGain.gain.rampTo(0, time);
+        delay.feedback.rampTo(0.18, time);
+        delay.wet.rampTo(0.12, time);
       }
 
       function playImageScoreEvent(event) {

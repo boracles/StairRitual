@@ -797,18 +797,16 @@
 
           if (activeScoreMode === "image" && loadedImageScoreBitmap) {
             drawLoadedImageScoreViewer(now);
+            drawImageScorePlaybackHead(now);
           } else {
             drawTrajectoryLines(now);
             drawBodyGlyphEvents(now);
-          }
-          drawTopFadeOverlay();
-          drawAlienSignalTitle(getScoreRect());
-          if (activeScoreMode === "image" && loadedImageScoreBitmap) {
-            drawImageScorePlaybackHead(now);
-          } else {
+            drawTopFadeOverlay();
+            drawAlienSignalTitle(getScoreRect());
             drawPlayhead();
+            drawLegendBar(getScoreRect());
           }
-          drawLegendBar(getScoreRect());
+
           if (!imageScorePlaying) {
             updateGlobalSound();
           }
@@ -2573,10 +2571,10 @@
         const image = actx.getImageData(0, 0, w, h);
         const pixels = image.data;
 
-        // Exported long scores contain a title/header and a bottom legend.
-        // This keeps the reader focused on the actual vertical score field.
-        const scoreTop = h > 900 ? Math.round(170 * scale) : 0;
-        const scoreBottom = h > 900 ? h - Math.round(145 * scale) : h;
+        // Clean exported scores are image-only now, so read the full image height as the score field.
+        // If an older score with UI is loaded, it will still work, but the clean format is preferred.
+        const scoreTop = 0;
+        const scoreBottom = h;
         const scoreHeight = Math.max(1, scoreBottom - scoreTop);
 
         const duration = clamp(
@@ -2700,112 +2698,11 @@
 
       function getImageScoreDisplayRect() {
         if (!loadedImageScoreBitmap) return null;
-        const rect = getScoreRect();
-        const maxW = rect.width * 0.88;
-        const maxH = rect.height * 0.9;
+
         const imageRatio =
           loadedImageScoreBitmap.width / loadedImageScoreBitmap.height;
-        const boxRatio = maxW / maxH;
-        let drawW;
-        let drawH;
-
-        if (imageRatio > boxRatio) {
-          drawW = maxW;
-          drawH = drawW / imageRatio;
-        } else {
-          drawH = maxH;
-          drawW = drawH * imageRatio;
-        }
-
-        const x = rect.left + (rect.width - drawW) * 0.5;
-        const y = rect.top + (rect.height - drawH) * 0.5;
-
-        return { x, y, w: drawW, h: drawH };
-      }
-
-      function drawLoadedImageScoreViewer(now) {
-        if (!loadedImageScoreBitmap) return;
-
-        const display = getImageScoreDisplayRect();
-        if (!display) return;
-        loadedImageScoreDisplay = display;
-
-        ctx.save();
-
-        // soft white card behind the uploaded score image
-        ctx.fillStyle = "rgba(255,255,255,0.86)";
-        roundRectPath(
-          ctx,
-          display.x - 18,
-          display.y - 18,
-          display.w + 36,
-          display.h + 36,
-          18,
-        );
-        ctx.fill();
-
-        ctx.strokeStyle = "rgba(16,17,20,0.08)";
-        ctx.lineWidth = 1;
-        roundRectPath(
-          ctx,
-          display.x - 18,
-          display.y - 18,
-          display.w + 36,
-          display.h + 36,
-          18,
-        );
-        ctx.stroke();
-
-        ctx.globalAlpha = imageScorePlaying ? 0.92 : 0.74;
-        ctx.drawImage(
-          loadedImageScoreBitmap,
-          display.x,
-          display.y,
-          display.w,
-          display.h,
-        );
-
-        ctx.globalAlpha = 1;
-        ctx.textAlign = "left";
-        ctx.textBaseline = "bottom";
-        ctx.font =
-          '600 12px Pretendard, "Noto Sans KR", "Noto Sans", Arial, sans-serif';
-        ctx.fillStyle = "rgba(18,18,18,0.48)";
-        ctx.fillText(
-          imageScorePlaying ? "PLAYING UPLOADED SCORE" : "UPLOADED SCORE READY",
-          display.x,
-          display.y - 26,
-        );
-
-        if (loadedImageScoreName) {
-          ctx.textAlign = "right";
-          ctx.fillStyle = "rgba(18,18,18,0.34)";
-          ctx.fillText(
-            loadedImageScoreName,
-            display.x + display.w,
-            display.y - 26,
-          );
-        }
-
-        // faint markers for the extracted events, so the user can see what the reader is hearing
-        loadedImageScoreEvents.forEach((event) => {
-          const x = display.x + event.x * display.w;
-          const y = display.y + event.y * display.h;
-          const color = getImageScoreCategoryColor(event.category);
-          const c = hexToRgb(color);
-          ctx.beginPath();
-          ctx.arc(x, y, 3.5 + event.energy * 5, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${imageScorePlaying ? 0.28 : 0.18})`;
-          ctx.fill();
-        });
-
-        ctx.restore();
-      }
-
-      function drawImageScorePlaybackHead(now) {
-        if (!loadedImageScoreBitmap) return;
-        const display = loadedImageScoreDisplay || getImageScoreDisplayRect();
-        if (!display) return;
+        const drawW = width;
+        const drawH = drawW / imageRatio;
 
         const duration = clamp(
           Number(imageScoreDurationInput.value) ||
@@ -2822,40 +2719,91 @@
             )
           : 0;
         const progress = imageScorePlaying ? elapsed / duration : 0;
-        const y = display.y + progress * display.h;
 
-        ctx.save();
+        const viewportTop = 0;
+        const viewportBottom = height;
+        const viewportH = viewportBottom - viewportTop;
+        const fixedPlayheadY = clamp(height * 0.42, 92, height - 120);
 
-        // darken the part that has not yet been played very slightly
-        if (imageScorePlaying) {
-          ctx.fillStyle = "rgba(255,255,255,0.58)";
-          ctx.fillRect(display.x, y, display.w, display.y + display.h - y);
+        let y = 0;
+        if (drawH <= viewportH) {
+          y = viewportTop + (viewportH - drawH) * 0.5;
+        } else if (imageScorePlaying) {
+          // Simulated score scrolling: the image fills the page width,
+          // then scrolls vertically while the playback head stays readable.
+          const minY = viewportBottom - drawH;
+          const maxY = viewportTop;
+          y = clamp(fixedPlayheadY - progress * drawH, minY, maxY);
+        } else {
+          y = viewportTop;
         }
 
+        return {
+          x: 0,
+          y,
+          w: drawW,
+          h: drawH,
+          progress,
+          elapsed,
+          duration,
+          playheadY: clamp(y + progress * drawH, viewportTop, viewportBottom),
+        };
+      }
+
+      function drawLoadedImageScoreViewer(now) {
+        if (!loadedImageScoreBitmap) return;
+
+        const display = getImageScoreDisplayRect();
+        if (!display) return;
+        loadedImageScoreDisplay = display;
+
+        ctx.save();
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, width, height);
+
+        ctx.globalAlpha = 1;
+        ctx.drawImage(
+          loadedImageScoreBitmap,
+          display.x,
+          display.y,
+          display.w,
+          display.h,
+        );
+        ctx.restore();
+      }
+
+      function drawImageScorePlaybackHead(now) {
+        if (!loadedImageScoreBitmap) return;
+        const display = loadedImageScoreDisplay || getImageScoreDisplayRect();
+        if (!display) return;
+
+        const y = display.playheadY;
+
+        ctx.save();
         ctx.strokeStyle = imageScorePlaying
-          ? "rgba(18,18,18,0.72)"
-          : "rgba(18,18,18,0.16)";
-        ctx.lineWidth = 2;
+          ? "rgba(18,18,18,0.78)"
+          : "rgba(18,18,18,0.18)";
+        ctx.lineWidth = imageScorePlaying ? 2.2 : 1.4;
         ctx.beginPath();
-        ctx.moveTo(display.x - 10, y);
-        ctx.lineTo(display.x + display.w + 10, y);
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
         ctx.stroke();
 
         if (imageScorePlaying) {
           ctx.fillStyle = "rgba(18,18,18,0.86)";
           ctx.beginPath();
-          ctx.arc(display.x - 14, y, 5, 0, Math.PI * 2);
+          ctx.arc(18, y, 5, 0, Math.PI * 2);
           ctx.fill();
 
           ctx.font =
             '600 11px Pretendard, "Noto Sans KR", "Noto Sans", Arial, sans-serif';
           ctx.textAlign = "left";
           ctx.textBaseline = "bottom";
-          ctx.fillStyle = "rgba(18,18,18,0.62)";
+          ctx.fillStyle = "rgba(18,18,18,0.58)";
           ctx.fillText(
-            `${elapsed.toFixed(1)} / ${duration.toFixed(1)}s`,
-            display.x,
-            y - 8,
+            `${display.elapsed.toFixed(1)} / ${display.duration.toFixed(1)}s`,
+            30,
+            Math.max(18, y - 8),
           );
         }
 
@@ -3110,8 +3058,9 @@
 
         const exportWidth = 1600;
         let pxPerSecond = 180;
-        let headerH = 220;
-        let footerH = 170;
+        // Export only the generated score image itself: no title, no footer UI/legend.
+        let headerH = 64;
+        let footerH = 64;
         let exportHeight = Math.round(
           headerH + duration * pxPerSecond + footerH,
         );
@@ -3625,35 +3574,8 @@
         rctx.fillStyle = "#ffffff";
         rctx.fillRect(0, 0, exportWidth, exportHeight);
 
-        const topGrad = rctx.createLinearGradient(0, 0, 0, headerH + 80);
-        topGrad.addColorStop(0, "rgba(255,255,255,1)");
-        topGrad.addColorStop(0.42, "rgba(255,255,255,0.98)");
-        topGrad.addColorStop(0.82, "rgba(255,255,255,0.42)");
-        topGrad.addColorStop(1, "rgba(255,255,255,0)");
-        rctx.fillStyle = topGrad;
-        rctx.fillRect(0, 0, exportWidth, headerH + 80);
-
-        rctx.font =
-          '600 42px Pretendard, "Noto Sans KR", "Noto Sans", Arial, sans-serif';
-        rctx.fillStyle = "rgba(18,18,18,0.9)";
-        rctx.textAlign = "center";
-        rctx.textBaseline = "top";
-        rctx.fillText("Ritual on the Stairs", exportWidth * 0.5, 56);
-
-        rctx.font =
-          '500 18px Pretendard, "Noto Sans KR", "Noto Sans", Arial, sans-serif';
-        rctx.fillStyle = "rgba(18,18,18,0.44)";
-        rctx.fillText(`${duration.toFixed(1)} sec`, exportWidth * 0.5, 108);
-
-        // guide lines
-        rctx.strokeStyle = "rgba(16,17,20,0.035)";
-        rctx.lineWidth = 1;
-        for (let y = scoreRect.top; y <= scoreRect.bottom; y += 28) {
-          rctx.beginPath();
-          rctx.moveTo(scoreRect.left, y);
-          rctx.lineTo(scoreRect.right, y);
-          rctx.stroke();
-        }
+        // No exported title, timestamp, footer UI, or guide lines.
+        // The saved PNG contains only the score marks on a clean white background.
 
         // trajectories
         const byPerson = new Map();
@@ -3756,32 +3678,8 @@
           drawGlyphLocal(item.glyph, item.x, item.y, baseScale, baseAlpha, 4);
         });
 
-        // footer legend
-        const legendY = exportHeight - 92;
-        const items = [
-          ["HEAD", DESIGN.colors.head],
-          ["SHOULDER", DESIGN.colors.shoulder],
-          ["ELBOW", DESIGN.colors.elbow],
-          ["HAND", DESIGN.colors.hand],
-          ["HIP", DESIGN.colors.hip],
-          ["KNEE", DESIGN.colors.knee],
-          ["FOOT", DESIGN.colors.foot],
-        ];
-        rctx.font =
-          '600 14px Pretendard, "Noto Sans KR", "Noto Sans", Arial, sans-serif';
-        items.forEach((item, index) => {
-          const x = 100 + index * 200;
-          const c = hexToRgbLocal(item[1]);
-          rctx.fillStyle = `rgba(${c.r},${c.g},${c.b},0.92)`;
-          rctx.beginPath();
-          rctx.arc(x, legendY, 9, 0, Math.PI * 2);
-          rctx.fill();
-          rctx.fillStyle = "rgba(18,18,18,0.72)";
-          rctx.fillText(item[0], x + 18, legendY + 5);
-        });
-
         const link = document.createElement("a");
-        link.download = `ritual_on_the_stairs_score_${Date.now()}.png`;
+        link.download = `ritual_on_the_stairs_score_clean_${Date.now()}.png`;
         link.href = exportCanvas.toDataURL("image/png");
         link.click();
       }

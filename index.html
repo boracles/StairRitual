@@ -258,6 +258,7 @@
       let loadedImageScoreEvents = [];
       let imageScorePlaying = false;
       const imageScoreTimers = [];
+      let activeScoreMode = "idle"; // "idle" | "movement" | "image"
       const archivedBodyGlyphEvents = [];
 
       const SCORE_THRESHOLD = 0.35;
@@ -596,7 +597,9 @@
 
         try {
           sequenceStatus.textContent = "READING IMAGE SCORE";
+          if (sequenceRunning) stopMovementSequence();
           loadedImageScoreEvents = await analyzeImageScoreFile(file);
+          activeScoreMode = "image";
           sequenceStatus.textContent = `IMAGE SCORE · ${loadedImageScoreEvents.length} EVENTS`;
           updateSequenceControls();
         } catch (error) {
@@ -615,20 +618,36 @@
 
       function updateSequenceControls() {
         topControls.style.display = systemReady ? "flex" : "none";
-        sequenceStartButton.disabled = !systemReady || sequenceRunning;
+
+        // 둘 중 하나만 작동하게 잠근다:
+        // 1) 업로드한 이미지 스코어 듣기
+        // 2) 카메라 움직임으로 새 스코어 만들기
+        sequenceStartButton.disabled =
+          !systemReady || sequenceRunning || imageScorePlaying;
         sequenceStopButton.disabled = !systemReady || !sequenceRunning;
         saveScoreButton.disabled =
-          sequenceRunning || archivedBodyGlyphEvents.length === 0;
-        loadImageScoreButton.disabled = imageScorePlaying;
-        imageScoreDurationInput.disabled = imageScorePlaying;
+          sequenceRunning ||
+          imageScorePlaying ||
+          archivedBodyGlyphEvents.length === 0;
+        loadImageScoreButton.disabled = sequenceRunning || imageScorePlaying;
+        imageScoreDurationInput.disabled = sequenceRunning || imageScorePlaying;
         playImageScoreButton.disabled =
-          imageScorePlaying || loadedImageScoreEvents.length === 0;
+          sequenceRunning ||
+          imageScorePlaying ||
+          loadedImageScoreEvents.length === 0;
         stopImageScoreButton.disabled = !imageScorePlaying;
 
         if (!systemReady) {
           sequenceStatus.textContent = "LOADING";
+        } else if (imageScorePlaying) {
+          sequenceStatus.textContent = "PLAYING IMAGE SCORE";
         } else if (sequenceRunning) {
-          sequenceStatus.textContent = "RECORDING";
+          sequenceStatus.textContent = "RECORDING MOVEMENT";
+        } else if (
+          loadedImageScoreEvents.length > 0 &&
+          activeScoreMode === "image"
+        ) {
+          sequenceStatus.textContent = `IMAGE SCORE · ${loadedImageScoreEvents.length} EVENTS`;
         } else if (archivedBodyGlyphEvents.length > 0) {
           sequenceStatus.textContent = `STOPPED · ${lastSequenceDuration.toFixed(1)}s`;
         } else {
@@ -637,7 +656,8 @@
       }
 
       function beginMovementSequence() {
-        if (!systemReady) return;
+        if (!systemReady || imageScorePlaying) return;
+        activeScoreMode = "movement";
         bodyGlyphEvents.length = 0;
         archivedBodyGlyphEvents.length = 0;
         lastSequenceDuration = 0;
@@ -654,6 +674,7 @@
         if (!sequenceRunning) return;
 
         sequenceRunning = false;
+        activeScoreMode = "idle";
         lastSequenceDuration = getCurrentSeconds();
 
         updateSequenceControls();
@@ -732,7 +753,10 @@
 
           drawScoreBackground(now);
 
-          if (poseReady && detector) {
+          if (imageScorePlaying) {
+            // 이미지 스코어를 듣는 동안에는 카메라/포즈 입력을 완전히 조용하게 둔다.
+            clearCameraPoseOverlay();
+          } else if (poseReady && detector) {
             try {
               const poses = await detector.estimatePoses(video, {
                 flipHorizontal: true,
@@ -764,7 +788,9 @@
           drawAlienSignalTitle(getScoreRect());
           drawPlayhead();
           drawLegendBar(getScoreRect());
-          updateGlobalSound();
+          if (!imageScorePlaying) {
+            updateGlobalSound();
+          }
 
           requestAnimationFrame(loop);
         } catch (error) {
@@ -2697,11 +2723,25 @@
       }
 
       async function playLoadedImageScore() {
-        if (loadedImageScoreEvents.length === 0 || imageScorePlaying) return;
+        if (
+          loadedImageScoreEvents.length === 0 ||
+          imageScorePlaying ||
+          sequenceRunning
+        )
+          return;
 
         if (!audioReady) {
           await startAudio();
         }
+
+        // 이미지 스코어 재생은 듣기 전용 모드다.
+        // live pose/movement sound와 절대 섞이지 않게 초기화한다.
+        activeScoreMode = "image";
+        sequenceRunning = false;
+        bodyGlyphEvents.length = 0;
+        personTracks.length = 0;
+        smoothedSoundEnergy = 0;
+        resetContinuousSoundForImageScore();
 
         imageScorePlaying = true;
         updateSequenceControls();
@@ -2724,6 +2764,7 @@
           () => {
             imageScorePlaying = false;
             imageScoreTimers.length = 0;
+            fadeContinuousSoundToIdle();
             sequenceStatus.textContent = "IMAGE SCORE DONE";
             updateSequenceControls();
           },
@@ -2736,8 +2777,36 @@
         imageScoreTimers.forEach((timer) => window.clearTimeout(timer));
         imageScoreTimers.length = 0;
         imageScorePlaying = false;
+        fadeContinuousSoundToIdle();
         sequenceStatus.textContent = "IMAGE SCORE STOPPED";
         updateSequenceControls();
+      }
+
+      function resetContinuousSoundForImageScore() {
+        if (!audioReady) return;
+        droneGain.gain.rampTo(0.006, 0.18);
+        breathGain.gain.rampTo(0.002, 0.18);
+        shimmerGain.gain.rampTo(0.004, 0.18);
+        airGain.gain.rampTo(0.004, 0.18);
+        squealGain.gain.rampTo(0.001, 0.18);
+        ringGain.gain.rampTo(0.001, 0.18);
+        filter.frequency.rampTo(900, 0.18);
+        delay.feedback.rampTo(0.22, 0.18);
+        delay.wet.rampTo(0.16, 0.18);
+        reverb.wet.rampTo(0.68, 0.18);
+      }
+
+      function fadeContinuousSoundToIdle() {
+        if (!audioReady) return;
+        droneGain.gain.rampTo(0.018, 0.45);
+        breathGain.gain.rampTo(0.003, 0.45);
+        shimmerGain.gain.rampTo(0.006, 0.45);
+        airGain.gain.rampTo(0.006, 0.45);
+        squealGain.gain.rampTo(0.001, 0.45);
+        ringGain.gain.rampTo(0.001, 0.45);
+        filter.frequency.rampTo(720, 0.45);
+        delay.feedback.rampTo(0.22, 0.45);
+        delay.wet.rampTo(0.16, 0.45);
       }
 
       function playImageScoreEvent(event) {

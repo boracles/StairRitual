@@ -110,6 +110,27 @@
         cursor: default;
       }
 
+      .durationInput {
+        width: 58px;
+        border: 1px solid rgba(24, 28, 36, 0.12);
+        background: rgba(255, 255, 255, 0.92);
+        color: rgba(24, 28, 36, 0.92);
+        border-radius: 999px;
+        padding: 10px 10px;
+        font:
+          600 13px/1 Pretendard,
+          "Noto Sans KR",
+          "Noto Sans",
+          Arial,
+          sans-serif;
+        box-shadow: 0 8px 24px rgba(20, 28, 44, 0.08);
+        outline: none;
+      }
+
+      #imageScoreInput {
+        display: none;
+      }
+
       #sequenceStatus {
         padding: 10px 14px;
         border-radius: 999px;
@@ -152,8 +173,33 @@
       <button id="saveScoreButton" class="controlButton" disabled>
         SAVE LONG SCORE
       </button>
+      <button id="loadImageScoreButton" class="controlButton">
+        LOAD SCORE IMAGE
+      </button>
+      <input
+        id="imageScoreDurationInput"
+        class="durationInput"
+        type="number"
+        min="5"
+        max="180"
+        step="1"
+        value="30"
+        title="image score duration in seconds"
+      />
+      <button id="playImageScoreButton" class="controlButton" disabled>
+        PLAY IMAGE SCORE
+      </button>
+      <button id="stopImageScoreButton" class="controlButton" disabled>
+        STOP SCORE
+      </button>
       <div id="sequenceStatus">READY</div>
     </div>
+
+    <input
+      id="imageScoreInput"
+      type="file"
+      accept="image/png,image/jpeg,image/webp"
+    />
 
     <div id="debug"></div>
 
@@ -179,6 +225,19 @@
       );
       const sequenceStopButton = document.getElementById("sequenceStopButton");
       const saveScoreButton = document.getElementById("saveScoreButton");
+      const loadImageScoreButton = document.getElementById(
+        "loadImageScoreButton",
+      );
+      const imageScoreInput = document.getElementById("imageScoreInput");
+      const imageScoreDurationInput = document.getElementById(
+        "imageScoreDurationInput",
+      );
+      const playImageScoreButton = document.getElementById(
+        "playImageScoreButton",
+      );
+      const stopImageScoreButton = document.getElementById(
+        "stopImageScoreButton",
+      );
       const sequenceStatus = document.getElementById("sequenceStatus");
       const debug = document.getElementById("debug");
 
@@ -196,6 +255,9 @@
       let systemReady = false;
       let sequenceRunning = false;
       let lastSequenceDuration = 0;
+      let loadedImageScoreEvents = [];
+      let imageScorePlaying = false;
+      const imageScoreTimers = [];
       const archivedBodyGlyphEvents = [];
 
       const SCORE_THRESHOLD = 0.35;
@@ -524,12 +586,44 @@
         await saveLongScoreImage();
       });
 
+      loadImageScoreButton.addEventListener("click", () => {
+        imageScoreInput.click();
+      });
+
+      imageScoreInput.addEventListener("change", async (event) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+
+        try {
+          sequenceStatus.textContent = "READING IMAGE SCORE";
+          loadedImageScoreEvents = await analyzeImageScoreFile(file);
+          sequenceStatus.textContent = `IMAGE SCORE · ${loadedImageScoreEvents.length} EVENTS`;
+          updateSequenceControls();
+        } catch (error) {
+          console.error("image score analysis error", error);
+          sequenceStatus.textContent = "IMAGE SCORE ERROR";
+        }
+      });
+
+      playImageScoreButton.addEventListener("click", async () => {
+        await playLoadedImageScore();
+      });
+
+      stopImageScoreButton.addEventListener("click", () => {
+        stopLoadedImageScore();
+      });
+
       function updateSequenceControls() {
         topControls.style.display = systemReady ? "flex" : "none";
         sequenceStartButton.disabled = !systemReady || sequenceRunning;
         sequenceStopButton.disabled = !systemReady || !sequenceRunning;
         saveScoreButton.disabled =
           sequenceRunning || archivedBodyGlyphEvents.length === 0;
+        loadImageScoreButton.disabled = imageScorePlaying;
+        imageScoreDurationInput.disabled = imageScorePlaying;
+        playImageScoreButton.disabled =
+          imageScorePlaying || loadedImageScoreEvents.length === 0;
+        stopImageScoreButton.disabled = !imageScorePlaying;
 
         if (!systemReady) {
           sequenceStatus.textContent = "LOADING";
@@ -2406,6 +2500,291 @@
 
         x += (bodyX - 0.5) * cfg.jitter * 2;
         return x;
+      }
+
+      async function analyzeImageScoreFile(file) {
+        const bitmap = await createImageBitmap(file);
+        const maxAnalysisWidth = 900;
+        const scale = Math.min(1, maxAnalysisWidth / bitmap.width);
+        const w = Math.max(1, Math.round(bitmap.width * scale));
+        const h = Math.max(1, Math.round(bitmap.height * scale));
+
+        const analysisCanvas = document.createElement("canvas");
+        analysisCanvas.width = w;
+        analysisCanvas.height = h;
+        const actx = analysisCanvas.getContext("2d", {
+          willReadFrequently: true,
+        });
+        actx.drawImage(bitmap, 0, 0, w, h);
+
+        const image = actx.getImageData(0, 0, w, h);
+        const pixels = image.data;
+
+        // Exported long scores contain a title/header and a bottom legend.
+        // This keeps the reader focused on the actual vertical score field.
+        const scoreTop = h > 900 ? Math.round(170 * scale) : 0;
+        const scoreBottom = h > 900 ? h - Math.round(145 * scale) : h;
+        const scoreHeight = Math.max(1, scoreBottom - scoreTop);
+
+        const duration = clamp(
+          Number(imageScoreDurationInput.value) || 30,
+          5,
+          180,
+        );
+        imageScoreDurationInput.value = duration;
+
+        const binSize = Math.max(8, Math.round(18 * scale));
+        const bins = new Map();
+
+        function addPixel(category, x, y, strength) {
+          if (y < scoreTop || y >= scoreBottom) return;
+          const bin = Math.floor((y - scoreTop) / binSize);
+          const key = `${category}:${bin}`;
+          let item = bins.get(key);
+          if (!item) {
+            item = {
+              category,
+              bin,
+              count: 0,
+              xSum: 0,
+              ySum: 0,
+              strengthSum: 0,
+            };
+            bins.set(key, item);
+          }
+          item.count += 1;
+          item.xSum += x;
+          item.ySum += y;
+          item.strengthSum += strength;
+        }
+
+        for (let y = scoreTop; y < scoreBottom; y += 2) {
+          for (let x = 0; x < w; x += 2) {
+            const idx = (y * w + x) * 4;
+            const r = pixels[idx];
+            const g = pixels[idx + 1];
+            const b = pixels[idx + 2];
+            const a = pixels[idx + 3];
+            if (a < 80) continue;
+
+            const hsv = rgbToHsv(r, g, b);
+            if (hsv.v < 0.45 || hsv.s < 0.22) continue;
+
+            const category = classifyScorePixel(hsv.h, hsv.s, hsv.v);
+            if (!category) continue;
+
+            addPixel(category, x, y, hsv.s * hsv.v);
+          }
+        }
+
+        const byCategory = new Map();
+        [...bins.values()].forEach((bin) => {
+          const densityThreshold = getImageScoreDensityThreshold(
+            bin.category,
+            scale,
+          );
+          if (bin.count < densityThreshold) return;
+          if (!byCategory.has(bin.category)) byCategory.set(bin.category, []);
+          byCategory.get(bin.category).push(bin);
+        });
+
+        const events = [];
+        byCategory.forEach((categoryBins, category) => {
+          categoryBins.sort((a, b) => a.bin - b.bin);
+
+          let segment = [];
+          const flushSegment = () => {
+            if (segment.length === 0) return;
+
+            const totalCount = segment.reduce(
+              (sum, item) => sum + item.count,
+              0,
+            );
+            const xSum = segment.reduce((sum, item) => sum + item.xSum, 0);
+            const ySum = segment.reduce((sum, item) => sum + item.ySum, 0);
+            const strengthSum = segment.reduce(
+              (sum, item) => sum + item.strengthSum,
+              0,
+            );
+
+            const xNorm = clamp(xSum / totalCount / w, 0, 1);
+            const y = ySum / totalCount;
+            const yNorm = clamp((y - scoreTop) / scoreHeight, 0, 1);
+            const time = yNorm * duration;
+            const density = totalCount / Math.max(1, segment.length);
+            const energy = clamp(
+              0.18 +
+                density / (120 * scale + 1) +
+                (strengthSum / totalCount) * 0.42,
+              0.12,
+              1,
+            );
+
+            events.push({
+              time,
+              category,
+              x: xNorm,
+              y: yNorm,
+              energy,
+              count: totalCount,
+            });
+          };
+
+          categoryBins.forEach((bin) => {
+            const last = segment[segment.length - 1];
+            if (!last || bin.bin - last.bin <= 1) {
+              segment.push(bin);
+            } else {
+              flushSegment();
+              segment = [bin];
+            }
+          });
+          flushSegment();
+        });
+
+        return events.sort((a, b) => a.time - b.time);
+      }
+
+      function classifyScorePixel(h, s, v) {
+        // Hue ranges match the current score color system.
+        // Dark/black pixels are intentionally ignored before this function.
+        if (h >= 238 && h <= 272) return "head";
+        if (h >= 188 && h <= 208) return "shoulder";
+        if (h >= 112 && h <= 145) return "elbow";
+        if (h >= 49 && h <= 65 && s > 0.42) return "hand";
+        if ((h >= 342 && h <= 360) || h <= 8) return "hip";
+        if (h >= 20 && h <= 38) return "knee";
+        if (h >= 312 && h <= 335) return "foot";
+        return null;
+      }
+
+      function getImageScoreDensityThreshold(category, scale) {
+        const base =
+          {
+            head: 5,
+            shoulder: 7,
+            elbow: 7,
+            hand: 6,
+            hip: 6,
+            knee: 6,
+            foot: 6,
+          }[category] || 6;
+        return Math.max(3, Math.round(base * scale));
+      }
+
+      function rgbToHsv(r, g, b) {
+        r /= 255;
+        g /= 255;
+        b /= 255;
+        const max = Math.max(r, g, b);
+        const min = Math.min(r, g, b);
+        const d = max - min;
+        let h = 0;
+
+        if (d !== 0) {
+          if (max === r) h = ((g - b) / d) % 6;
+          else if (max === g) h = (b - r) / d + 2;
+          else h = (r - g) / d + 4;
+          h *= 60;
+          if (h < 0) h += 360;
+        }
+
+        return {
+          h,
+          s: max === 0 ? 0 : d / max,
+          v: max,
+        };
+      }
+
+      async function playLoadedImageScore() {
+        if (loadedImageScoreEvents.length === 0 || imageScorePlaying) return;
+
+        if (!audioReady) {
+          await startAudio();
+        }
+
+        imageScorePlaying = true;
+        updateSequenceControls();
+        sequenceStatus.textContent = "PLAYING IMAGE SCORE";
+
+        const duration = clamp(
+          Number(imageScoreDurationInput.value) || 30,
+          5,
+          180,
+        );
+
+        loadedImageScoreEvents.forEach((event) => {
+          const timer = window.setTimeout(() => {
+            playImageScoreEvent(event);
+          }, event.time * 1000);
+          imageScoreTimers.push(timer);
+        });
+
+        const doneTimer = window.setTimeout(
+          () => {
+            imageScorePlaying = false;
+            imageScoreTimers.length = 0;
+            sequenceStatus.textContent = "IMAGE SCORE DONE";
+            updateSequenceControls();
+          },
+          duration * 1000 + 300,
+        );
+        imageScoreTimers.push(doneTimer);
+      }
+
+      function stopLoadedImageScore() {
+        imageScoreTimers.forEach((timer) => window.clearTimeout(timer));
+        imageScoreTimers.length = 0;
+        imageScorePlaying = false;
+        sequenceStatus.textContent = "IMAGE SCORE STOPPED";
+        updateSequenceControls();
+      }
+
+      function playImageScoreEvent(event) {
+        if (!audioReady) return;
+
+        const now = Tone.now();
+        const e = clamp(event.energy || 0.3, 0.08, 1);
+        const x = clamp(event.x ?? 0.5, 0, 1);
+        const y = clamp(event.y ?? 0.5, 0, 1);
+        const velocity = clamp(0.16 + e * 0.68, 0.12, 0.92);
+
+        if (event.category === "head") {
+          const note = pickNote(["C5", "Eb5", "G5", "Bb5", "C6"], x);
+          signalSynth.triggerAttackRelease(note, "4n", now, velocity * 0.52);
+          squealGain.gain.rampTo(0.004 + e * 0.034, 0.35);
+          squealOsc.frequency.rampTo(420 + y * 620 + e * 180, 0.5);
+        } else if (event.category === "shoulder") {
+          const note = pickNote(scales.shoulder, y);
+          signalSynth.triggerAttackRelease(note, "2n", now, velocity * 0.38);
+          droneGain.gain.rampTo(0.026 + e * 0.11, 0.6);
+          reverb.wet.rampTo(0.68 + e * 0.18, 0.8);
+        } else if (event.category === "elbow") {
+          const note = pickNote(["G2", "Bb2", "C3", "Eb3"], x);
+          metalSynth.triggerAttackRelease(note, "8n", now, velocity * 0.22);
+          filter.frequency.rampTo(540 + e * 1500, 0.45);
+        } else if (event.category === "hand") {
+          const note = pickNote(scales.hand, x);
+          signalSynth.triggerAttackRelease(note, "8n", now, velocity * 0.82);
+          ringGain.gain.rampTo(0.003 + e * 0.028, 0.4);
+          ringOsc.frequency.rampTo(520 + x * 740 + e * 180, 0.45);
+        } else if (event.category === "hip") {
+          const note = pickNote(scales.hip, y);
+          bodySynth.triggerAttackRelease(note, "1n", now, velocity * 0.54);
+          droneGain.gain.rampTo(0.03 + e * 0.12, 0.6);
+        } else if (event.category === "knee") {
+          const note = pickNote(scales.knee, y);
+          bodySynth.triggerAttackRelease(note, "4n", now, velocity * 0.58);
+          delay.feedback.rampTo(0.24 + e * 0.16, 0.5);
+        } else if (event.category === "foot") {
+          const note = pickNote(scales.foot, x);
+          bodySynth.triggerAttackRelease(note, "2n", now, velocity * 0.62);
+          airGain.gain.rampTo(0.012 + e * 0.046, 0.55);
+        }
+
+        filter.frequency.rampTo(720 + e * 1400 + (1 - y) * 480, 0.7);
+        shimmerGain.gain.rampTo(0.012 + e * 0.05, 0.75);
+        airGain.gain.rampTo(0.01 + e * 0.035, 0.8);
       }
 
       async function saveLongScoreImage() {

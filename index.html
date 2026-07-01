@@ -967,6 +967,23 @@
           byPerson.get(item.glyph.personId).push(item);
         });
 
+        const drawSoftStamp = (x, y, radius, color, alpha) => {
+          const grad = ctx.createRadialGradient(x, y, 0, x, y, radius * 1.62);
+          grad.addColorStop(
+            0,
+            `rgba(${color.r},${color.g},${color.b},${alpha})`,
+          );
+          grad.addColorStop(
+            0.46,
+            `rgba(${color.r},${color.g},${color.b},${alpha * 0.58})`,
+          );
+          grad.addColorStop(1, `rgba(${color.r},${color.g},${color.b},0)`);
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(x, y, radius * 1.62, 0, Math.PI * 2);
+          ctx.fill();
+        };
+
         const pointOnQuad = (t, p0, p1, p2) => {
           const mt = 1 - t;
           return {
@@ -975,47 +992,53 @@
           };
         };
 
-        const drawSoftDot = (x, y, radius, colorHex, alpha) => {
-          const c = hexToRgb(colorHex);
-          const grad = ctx.createRadialGradient(x, y, 0, x, y, radius);
-          grad.addColorStop(0, `rgba(${c.r},${c.g},${c.b},${alpha})`);
-          grad.addColorStop(0.55, `rgba(${c.r},${c.g},${c.b},${alpha * 0.38})`);
-          grad.addColorStop(1, `rgba(${c.r},${c.g},${c.b},0)`);
-          ctx.fillStyle = grad;
-          ctx.beginPath();
-          ctx.arc(x, y, radius, 0, Math.PI * 2);
-          ctx.fill();
-        };
+        // Close to the original trajectory texture, but with an adaptive budget.
+        // It uses soft stamped particles again instead of a plain stroke,
+        // while reducing density only when too many visible glyphs are on screen.
+        const totalSegments = [...byPerson.values()].reduce(
+          (sum, items) => sum + Math.max(0, items.length - 1),
+          0,
+        );
+        const densityScale =
+          totalSegments > 18 ? 0.58 : totalSegments > 10 ? 0.76 : 0.92;
+        const maxLayers = totalSegments > 14 ? 2 : 3;
 
-        // Optimized but visually smoother:
-        // draw each connection as a continuous soft stroke instead of sparse stamped blobs.
         byPerson.forEach((items) => {
           if (items.length < 2) return;
 
           for (let i = 1; i < items.length; i++) {
             const prev = items[i - 1];
             const curr = items[i];
-
-            const p0 = { x: prev.state.x, y: prev.state.y };
-            const p2 = { x: curr.state.x, y: curr.state.y };
-
             const energy = (prev.glyph.energy + curr.glyph.energy) * 0.5;
             const alpha = clamp(
-              Math.min(prev.state.alpha, curr.state.alpha) * 0.72,
-              0.12,
-              0.52,
+              Math.min(prev.state.alpha, curr.state.alpha) * 0.86,
+              0.18,
+              0.66,
             );
+
+            const pulseA =
+              0.84 + 0.22 * Math.sin(i * 1.08 + curr.glyph.time * 0.42);
+            const pulseB =
+              0.84 + 0.22 * Math.sin((i + 0.5) * 1.08 + curr.glyph.time * 0.42);
+            const startRadius = 7 + energy * 17 + pulseA * 5;
+            const endRadius = 7 + energy * 17 + pulseB * 5;
 
             const control = {
               x:
-                (p0.x + p2.x) * 0.5 +
+                (prev.state.x + curr.state.x) * 0.5 +
                 ((curr.glyph.motionVecX || 0) + (prev.glyph.motionVecX || 0)) *
-                  10,
+                  12,
               y:
-                (p0.y + p2.y) * 0.5 +
+                (prev.state.y + curr.state.y) * 0.5 +
                 ((curr.glyph.motionVecY || 0) + (prev.glyph.motionVecY || 0)) *
-                  8,
+                  10,
             };
+
+            const p0 = { x: prev.state.x, y: prev.state.y };
+            const p2 = { x: curr.state.x, y: curr.state.y };
+            const approxLen = Math.hypot(p2.x - p0.x, p2.y - p0.y);
+            const baseSteps = Math.max(12, Math.ceil(approxLen / 9));
+            const steps = Math.max(8, Math.round(baseSteps * densityScale));
 
             const prevLayers = getGlyphLineColorLayers(prev.glyph);
             const currLayers = getGlyphLineColorLayers(curr.glyph);
@@ -1029,7 +1052,6 @@
                 currLevel: 0,
               });
             });
-
             currLayers.forEach((layer) => {
               if (!layerMap.has(layer.id)) {
                 layerMap.set(layer.id, {
@@ -1050,69 +1072,50 @@
               }))
               .filter((layer) => layer.avgLevel > 0.08)
               .sort((a, b) => b.avgLevel - a.avgLevel)
-              .slice(0, 3);
+              .slice(0, maxLayers);
 
             if (activeLayers.length === 0) {
+              const fallback = hexToRgb(getGlyphDominantColor(prev.glyph));
               activeLayers.push({
                 id: "fallback",
-                color: getGlyphDominantColor(prev.glyph),
-                avgLevel: 0.6,
-                prevLevel: 0.6,
-                currLevel: 0.6,
+                color: `rgb(${fallback.r},${fallback.g},${fallback.b})`,
+                avgLevel: 1,
+                prevLevel: 1,
+                currLevel: 1,
               });
             }
 
-            activeLayers.forEach((layer, index) => {
-              const c = hexToRgb(layer.color);
-              const level = layer.avgLevel;
-              const lineWidth = 8 + energy * 18 + level * 12 - index * 2;
-              const layerAlpha =
-                alpha * (0.46 + level * 0.34) * (1 - index * 0.16);
+            for (let s = 0; s <= steps; s++) {
+              const t = s / steps;
+              const p = pointOnQuad(t, p0, control, p2);
+              const radius = startRadius + (endRadius - startRadius) * t;
 
-              ctx.save();
-              ctx.lineCap = "round";
-              ctx.lineJoin = "round";
-
-              // soft outer stroke
-              ctx.shadowColor = `rgba(${c.r},${c.g},${c.b},${layerAlpha * 0.45})`;
-              ctx.shadowBlur = 10 + level * 10;
-              ctx.strokeStyle = `rgba(${c.r},${c.g},${c.b},${layerAlpha * 0.32})`;
-              ctx.lineWidth = lineWidth * 1.75;
-              ctx.beginPath();
-              ctx.moveTo(p0.x, p0.y);
-              ctx.quadraticCurveTo(control.x, control.y, p2.x, p2.y);
-              ctx.stroke();
-
-              // clearer inner stroke
-              ctx.shadowBlur = 0;
-              ctx.strokeStyle = `rgba(${c.r},${c.g},${c.b},${layerAlpha * 0.62})`;
-              ctx.lineWidth = lineWidth * 0.72;
-              ctx.beginPath();
-              ctx.moveTo(p0.x, p0.y);
-              ctx.quadraticCurveTo(control.x, control.y, p2.x, p2.y);
-              ctx.stroke();
-
-              ctx.restore();
-            });
-
-            // A few soft beads preserve the graphic-score texture without making a broken center line.
-            const beadSteps = 3;
-            activeLayers.slice(0, 2).forEach((layer, layerIndex) => {
-              for (let s = 1; s < beadSteps; s++) {
-                const t = s / beadSteps;
-                const p = pointOnQuad(t, p0, control, p2);
+              activeLayers.forEach((layer, index) => {
+                const c = hexToRgb(layer.color);
                 const level =
                   layer.prevLevel + (layer.currLevel - layer.prevLevel) * t;
-                const radius = 10 + energy * 14 + level * 8 - layerIndex * 2;
-                drawSoftDot(
+                const layerScale = 0.44 + level * 0.76;
+                const layerAlpha =
+                  alpha * (0.11 + level * 0.19) * (1 - index * 0.11);
+                const layerRadius = radius * layerScale;
+
+                // Two-layer stamp: keeps the old soft body without the full 3x cost.
+                drawSoftStamp(
                   p.x,
                   p.y,
-                  radius,
-                  layer.color,
-                  alpha * (0.16 + level * 0.16),
+                  layerRadius * 1.02,
+                  c,
+                  layerAlpha * 0.42,
                 );
-              }
-            });
+                drawSoftStamp(
+                  p.x,
+                  p.y,
+                  layerRadius * 0.56,
+                  c,
+                  layerAlpha * 0.64,
+                );
+              });
+            }
           }
         });
       }

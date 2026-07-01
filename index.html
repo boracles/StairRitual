@@ -1,0 +1,2137 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <title>Pose Graphic Score Sound</title>
+
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background: #ffffff;
+        color: #111111;
+        font-family:
+          "IBM Plex Sans",
+          "Noto Sans KR",
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          sans-serif;
+      }
+
+      #scoreCanvas {
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+        display: block;
+        background: #ffffff;
+      }
+
+      #video {
+        position: fixed;
+        right: 24px;
+        bottom: 138px;
+        width: 260px;
+        opacity: 0.72;
+        border-radius: 12px;
+        transform: scaleX(-1);
+        z-index: 7;
+        pointer-events: none;
+        border: 1px solid rgba(234, 236, 242, 0.24);
+        box-shadow: 0 16px 36px rgba(0, 0, 0, 0.38);
+        background: #000000;
+      }
+
+      #startButton {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        padding: 16px 28px;
+        border-radius: 999px;
+        border: 1px solid rgba(234, 236, 242, 0.32);
+        background: rgba(12, 14, 19, 0.82);
+        color: #eaecf2;
+        font-size: 14px;
+        letter-spacing: 0.06em;
+        backdrop-filter: blur(12px);
+        cursor: pointer;
+        z-index: 10;
+        box-shadow: 0 0 28px rgba(47, 230, 224, 0.16);
+      }
+
+      #status {
+        display: none;
+      }
+
+      #debug {
+        display: none;
+      }
+    </style>
+  </head>
+
+  <body>
+    <canvas id="scoreCanvas"></canvas>
+    <video id="video" autoplay playsinline muted></video>
+
+    <button id="startButton">START GRAPHIC SCORE</button>
+
+    <div id="debug"></div>
+
+    <div id="status">
+      관절 움직임이 세로 시간축 위에 graphic score로 기록됩니다.<br />
+      실루엣 구조: 어깨 / 손 / 엉덩이 / 무릎 / 발
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@2.1.3/dist/pose-detection.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+
+    <script>
+      const video = document.getElementById("video");
+      const canvas = document.getElementById("scoreCanvas");
+      const ctx = canvas.getContext("2d");
+      const startButton = document.getElementById("startButton");
+      const debug = document.getElementById("debug");
+
+      let width = window.innerWidth;
+      let height = window.innerHeight;
+
+      canvas.width = width;
+      canvas.height = height;
+
+      let detector = null;
+      let poseReady = false;
+      let audioReady = false;
+      let startTime = 0;
+      let smoothedSoundEnergy = 0;
+
+      const SCORE_THRESHOLD = 0.35;
+      const SCORE_WINDOW_SECONDS = 10;
+
+      const DESIGN = {
+        ground: "#FFFFFF",
+        panel: "#FFFFFF",
+        ink: "#101114",
+        muted: "rgba(16,17,20,0.55)",
+        faint: "rgba(16,17,20,0.22)",
+        hairline: "rgba(16,17,20,0.10)",
+        grid: "rgba(16,17,20,0.035)",
+
+        colors: {
+          shoulder: "#6CCBFF", // airy sky blue
+          hand: "#F3E70A", // vivid yellow
+          hip: "#FF9DB2", // soft pink
+          knee: "#16D8B8", // aqua green
+          foot: "#FF0A8A", // vivid magenta
+        },
+      };
+
+      const leftMargin = 64;
+      const rightMargin = 64;
+      const topMargin = 92;
+      const PANEL_HEIGHT = 128;
+      const bottomMargin = PANEL_HEIGHT;
+
+      const BODY_GUIDE = {
+        shoulder: { spread: 64, jitter: 10 },
+        hand: { spread: 150, jitter: 14 },
+        hip: { spread: 0, jitter: 8 },
+        knee: { spread: 42, jitter: 8 },
+        foot: { spread: 88, jitter: 10 },
+      };
+
+      const EVENT_DENSITY = {
+        shoulder: { threshold: 0.11, minInterval: 0.24, minGap: 0.22 },
+        hand: { threshold: 0.07, minInterval: 0.14, minGap: 0.14 },
+        hip: { threshold: 0.07, minInterval: 0.22, minGap: 0.2 },
+        knee: { threshold: 0.08, minInterval: 0.18, minGap: 0.18 },
+        foot: { threshold: 0.08, minInterval: 0.22, minGap: 0.2 },
+      };
+
+      const lanes = [
+        {
+          id: "shoulder",
+          label: "SHOULDER · 어깨",
+          token: "ARCH",
+          joints: ["left_shoulder", "right_shoulder"],
+          shape: "arch",
+          color: DESIGN.colors.shoulder,
+        },
+        {
+          id: "hand",
+          label: "HAND · 손",
+          token: "DISC · L/R",
+          joints: ["left_wrist", "right_wrist"],
+          shape: "disc",
+          color: DESIGN.colors.hand,
+        },
+        {
+          id: "hip",
+          label: "HIP · 엉덩이",
+          token: "CORE",
+          joints: ["left_hip", "right_hip"],
+          shape: "core",
+          color: DESIGN.colors.hip,
+        },
+        {
+          id: "knee",
+          label: "KNEE · 무릎",
+          token: "DOME",
+          joints: ["left_knee", "right_knee"],
+          shape: "dome",
+          color: DESIGN.colors.knee,
+        },
+        {
+          id: "foot",
+          label: "FOOT · 발",
+          token: "POINT · L/R",
+          joints: ["left_ankle", "right_ankle"],
+          shape: "point",
+          color: DESIGN.colors.foot,
+        },
+      ];
+
+      const jointNames = [
+        "left_hip",
+        "right_hip",
+        "left_wrist",
+        "right_wrist",
+        "left_knee",
+        "right_knee",
+        "left_ankle",
+        "right_ankle",
+        "left_shoulder",
+        "right_shoulder",
+      ];
+
+      const MAX_PEOPLE = 6;
+      const personTracks = [];
+      let nextTrackId = 1;
+
+      const trackedJoints = createJointMap(); // fallback / compatibility
+      const bodyGlyphEvents = [];
+      const scoreEvents = [];
+
+      function createJointMap() {
+        const map = {};
+
+        jointNames.forEach((name) => {
+          map[name] = createJointState(name);
+        });
+
+        return map;
+      }
+
+      function createJointState(name = "") {
+        return {
+          name,
+          x: 0,
+          y: 0,
+          prevX: 0,
+          prevY: 0,
+          speed: 0,
+          prevSpeed: 0,
+          acceleration: 0,
+          direction: 0,
+          level: 0,
+          visible: false,
+        };
+      }
+
+      // --------------------------------
+      // Sound
+      // --------------------------------
+
+      const masterGain = new Tone.Gain(0.72).toDestination();
+
+      const reverb = new Tone.Reverb({
+        decay: 14.0,
+        wet: 0.68,
+      }).connect(masterGain);
+
+      const delay = new Tone.FeedbackDelay({
+        delayTime: "4n",
+        feedback: 0.34,
+        wet: 0.24,
+      }).connect(reverb);
+
+      const filter = new Tone.Filter({
+        type: "lowpass",
+        frequency: 1150,
+        Q: 0.55,
+        rolloff: -24,
+      }).connect(delay);
+
+      const signalSynth = new Tone.FMSynth({
+        harmonicity: 0.72,
+        modulationIndex: 2.8,
+        oscillator: { type: "sine" },
+        envelope: {
+          attack: 0.18,
+          decay: 1.4,
+          sustain: 0.28,
+          release: 3.8,
+        },
+        modulation: { type: "triangle" },
+        modulationEnvelope: {
+          attack: 0.22,
+          decay: 1.7,
+          sustain: 0.18,
+          release: 4.2,
+        },
+      }).connect(filter);
+
+      const bodySynth = new Tone.MembraneSynth({
+        pitchDecay: 0.025,
+        octaves: 1.35,
+        oscillator: { type: "sine" },
+        envelope: {
+          attack: 0.12,
+          decay: 1.6,
+          sustain: 0.22,
+          release: 3.2,
+        },
+      }).connect(filter);
+
+      const metalSynth = new Tone.MetalSynth({
+        frequency: 80,
+        envelope: {
+          attack: 0.12,
+          decay: 1.2,
+          release: 2.4,
+        },
+        harmonicity: 1.8,
+        modulationIndex: 5,
+        resonance: 900,
+        octaves: 0.7,
+      }).connect(filter);
+
+      const drone = new Tone.Oscillator({
+        frequency: 48,
+        type: "sine",
+      });
+
+      const droneGain = new Tone.Gain(0).connect(filter);
+      drone.connect(droneGain);
+
+      const breathOsc = new Tone.Oscillator({
+        frequency: 73,
+        type: "sine",
+      });
+      const breathGain = new Tone.Gain(0).connect(filter);
+      breathOsc.connect(breathGain);
+
+      const shimmerOsc = new Tone.Oscillator({
+        frequency: 196,
+        type: "triangle",
+      });
+      const shimmerGain = new Tone.Gain(0).connect(filter);
+      shimmerOsc.connect(shimmerGain);
+
+      const airNoise = new Tone.Noise("pink");
+      const airFilter = new Tone.Filter({
+        type: "bandpass",
+        frequency: 900,
+        Q: 0.6,
+      }).connect(filter);
+      const airGain = new Tone.Gain(0).connect(airFilter);
+      airNoise.connect(airGain);
+
+      // Resonant alien squeal layer: 얇고 울리는 외계 신호음.
+      const squealOsc = new Tone.Oscillator({
+        frequency: 640,
+        type: "sine",
+      });
+      const squealGain = new Tone.Gain(0).connect(filter);
+      squealOsc.connect(squealGain);
+
+      const ringOsc = new Tone.Oscillator({
+        frequency: 1180,
+        type: "triangle",
+      });
+      const ringGain = new Tone.Gain(0).connect(filter);
+      ringOsc.connect(ringGain);
+
+      const scales = {
+        hip: ["C1", "G1", "Bb1", "C2"],
+        hand: ["C4", "D4", "Eb4", "G4", "Bb4", "C5", "D5", "G5"],
+        knee: ["C2", "D2", "G2", "Bb2"],
+        foot: ["C1", "G1", "Bb1"],
+        shoulder: ["C2", "G2", "Bb2", "C3", "Eb3"],
+      };
+
+      // --------------------------------
+      // Start
+      // --------------------------------
+
+      startButton.addEventListener("click", async () => {
+        try {
+          startButton.textContent = "LOADING CAMERA...";
+          await startCamera();
+
+          startButton.textContent = "LOADING POSE MODEL...";
+          await startPoseModel();
+
+          startButton.textContent = "STARTING AUDIO...";
+          await startAudio();
+
+          startTime = performance.now();
+
+          poseReady = true;
+          startButton.style.display = "none";
+
+          requestAnimationFrame(loop);
+        } catch (error) {
+          console.error(error);
+          startButton.textContent = "ERROR - CHECK CONSOLE";
+          debug.textContent = error.message;
+        }
+      });
+
+      async function startCamera() {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: 640,
+            height: 480,
+            facingMode: "user",
+          },
+          audio: false,
+        });
+
+        video.srcObject = stream;
+
+        await new Promise((resolve) => {
+          video.onloadedmetadata = resolve;
+        });
+
+        await video.play();
+      }
+
+      async function startPoseModel() {
+        try {
+          await tf.setBackend("webgl");
+        } catch (error) {
+          console.warn("webgl backend unavailable, falling back to cpu", error);
+          await tf.setBackend("cpu");
+        }
+        await tf.ready();
+
+        const model = poseDetection.SupportedModels.MoveNet;
+
+        detector = await poseDetection.createDetector(model, {
+          modelType: poseDetection.movenet.modelType.MULTIPOSE_LIGHTNING,
+          enableTracking: true,
+          trackerType: poseDetection.TrackerType.BoundingBox,
+        });
+      }
+
+      async function startAudio() {
+        await Tone.start();
+        await Tone.context.resume();
+        drone.start();
+        breathOsc.start();
+        shimmerOsc.start();
+        airNoise.start();
+        squealOsc.start();
+        ringOsc.start();
+
+        droneGain.gain.value = 0.032;
+        breathGain.gain.value = 0.018;
+        shimmerGain.gain.value = 0.012;
+        airGain.gain.value = 0.014;
+        squealGain.gain.value = 0.004;
+        ringGain.gain.value = 0.004;
+        filter.frequency.value = 1050;
+        reverb.wet.value = 0.7;
+        delay.wet.value = 0.22;
+        delay.feedback.value = 0.32;
+
+        signalSynth.triggerAttackRelease("E4", "1n", Tone.now(), 0.12);
+        audioReady = true;
+      }
+
+      // --------------------------------
+      // Main loop
+      // --------------------------------
+
+      async function loop() {
+        const now = getCurrentSeconds();
+
+        drawScoreBackground(now);
+
+        if (poseReady && detector) {
+          try {
+            const poses = await detector.estimatePoses(video, {
+              flipHorizontal: true,
+              maxPoses: MAX_PEOPLE,
+            });
+
+            if (poses.length > 0) {
+              updateTracksFromPoses(poses, now);
+            } else {
+              cleanupPersonTracks(now);
+            }
+          } catch (error) {
+            console.error("estimatePoses error", error);
+          }
+        }
+
+        drawTrajectoryLines(now);
+        drawBodyGlyphEvents(now);
+        drawPlayhead();
+        drawLegendBar(getScoreRect());
+        updateGlobalSound();
+
+        requestAnimationFrame(loop);
+      }
+
+      function getGlyphRenderState(glyph, now, rect = getScoreRect()) {
+        const age = now - glyph.time;
+        if (age < 0 || age > SCORE_WINDOW_SECONDS) return null;
+
+        const bodyX = glyph.bodyX ?? 0.5;
+        const progress = age / SCORE_WINDOW_SECONDS;
+        const baseX = rect.left + rect.width * (0.14 + bodyX * 0.72);
+        const baseY = rect.bottom - progress * rect.height;
+
+        const motionX =
+          (glyph.motionDriftX || 0) * progress * rect.width * 0.12;
+        const motionY =
+          (glyph.motionDriftY || 0) * progress * rect.height * 0.07;
+
+        const x = baseX + motionX;
+        const y = baseY + motionY;
+
+        return {
+          age,
+          progress,
+          x,
+          y,
+          alpha: clamp((1 - progress) * (0.68 + glyph.energy * 1.25), 0, 1),
+          scale: 1.18 + glyph.energy * 1.92,
+        };
+      }
+
+      function getGlyphDominantColor(glyph) {
+        const parts = [
+          {
+            level: glyph.parts.shoulderL.level + glyph.parts.shoulderR.level,
+            color: DESIGN.colors.shoulder,
+          },
+          {
+            level: glyph.parts.handL.level + glyph.parts.handR.level,
+            color: DESIGN.colors.hand,
+          },
+          { level: glyph.parts.hip.level, color: DESIGN.colors.hip },
+          {
+            level: glyph.parts.kneeL.level + glyph.parts.kneeR.level,
+            color: DESIGN.colors.knee,
+          },
+          {
+            level: glyph.parts.footL.level + glyph.parts.footR.level,
+            color: DESIGN.colors.foot,
+          },
+        ];
+        parts.sort((a, b) => b.level - a.level);
+        return parts[0].color;
+      }
+
+      function drawTrajectoryLines(now) {
+        const rect = getScoreRect();
+        const visible = bodyGlyphEvents
+          .map((glyph) => ({
+            glyph,
+            state: getGlyphRenderState(glyph, now, rect),
+          }))
+          .filter((item) => item.state)
+          .sort(
+            (a, b) =>
+              a.glyph.personId - b.glyph.personId ||
+              a.glyph.time - b.glyph.time,
+          );
+
+        const byPerson = new Map();
+        visible.forEach((item) => {
+          if (!byPerson.has(item.glyph.personId)) {
+            byPerson.set(item.glyph.personId, []);
+          }
+          byPerson.get(item.glyph.personId).push(item);
+        });
+
+        const drawSoftBlob = (x, y, radius, color, alpha) => {
+          const g = ctx.createRadialGradient(x, y, 0, x, y, radius * 1.6);
+          g.addColorStop(0, `rgba(${color.r},${color.g},${color.b},${alpha})`);
+          g.addColorStop(
+            0.55,
+            `rgba(${color.r},${color.g},${color.b},${alpha * 0.58})`,
+          );
+          g.addColorStop(1, `rgba(${color.r},${color.g},${color.b},0)`);
+          ctx.fillStyle = g;
+          ctx.beginPath();
+          ctx.arc(x, y, radius * 1.6, 0, Math.PI * 2);
+          ctx.fill();
+        };
+
+        byPerson.forEach((items) => {
+          if (items.length < 2) return;
+
+          for (let i = 1; i < items.length; i++) {
+            const prev = items[i - 1];
+            const curr = items[i];
+            const prevColor = hexToRgb(getGlyphDominantColor(prev.glyph));
+            const currColor = hexToRgb(getGlyphDominantColor(curr.glyph));
+            const energy = (prev.glyph.energy + curr.glyph.energy) * 0.5;
+            const alpha = clamp(
+              Math.min(prev.state.alpha, curr.state.alpha) * 0.96,
+              0.24,
+              0.84,
+            );
+
+            const pulse =
+              0.68 + 0.42 * Math.sin(i * 1.12 + curr.glyph.time * 0.45);
+            const bodyWidth = 16 + energy * 42 + pulse * 12;
+            const auraWidth = bodyWidth * 1.9;
+
+            const cx =
+              (prev.state.x + curr.state.x) * 0.5 +
+              ((curr.glyph.motionVecX || 0) + (prev.glyph.motionVecX || 0)) *
+                13;
+            const cy =
+              (prev.state.y + curr.state.y) * 0.5 +
+              ((curr.glyph.motionVecY || 0) + (prev.glyph.motionVecY || 0)) *
+                11;
+
+            const buildGradient = (a0, a1) => {
+              const grad = ctx.createLinearGradient(
+                prev.state.x,
+                prev.state.y,
+                curr.state.x,
+                curr.state.y,
+              );
+              grad.addColorStop(
+                0,
+                `rgba(${prevColor.r},${prevColor.g},${prevColor.b},${a0})`,
+              );
+              grad.addColorStop(
+                1,
+                `rgba(${currColor.r},${currColor.g},${currColor.b},${a1})`,
+              );
+              return grad;
+            };
+
+            // Soft aura pass
+            ctx.save();
+            ctx.lineCap = "round";
+            ctx.lineJoin = "round";
+            ctx.filter = "blur(22px)";
+            ctx.strokeStyle = buildGradient(alpha * 0.36, alpha * 0.36);
+            ctx.lineWidth = auraWidth;
+            ctx.beginPath();
+            ctx.moveTo(prev.state.x, prev.state.y);
+            ctx.quadraticCurveTo(cx, cy, curr.state.x, curr.state.y);
+            ctx.stroke();
+            drawSoftBlob(
+              prev.state.x,
+              prev.state.y,
+              auraWidth * 0.42,
+              prevColor,
+              alpha * 0.22,
+            );
+            drawSoftBlob(
+              curr.state.x,
+              curr.state.y,
+              auraWidth * 0.42,
+              currColor,
+              alpha * 0.22,
+            );
+            ctx.restore();
+
+            // Soft body pass
+            ctx.save();
+            ctx.lineCap = "round";
+            ctx.lineJoin = "round";
+            ctx.filter = "blur(10px)";
+            ctx.strokeStyle = buildGradient(alpha * 0.64, alpha * 0.64);
+            ctx.lineWidth = bodyWidth;
+            ctx.beginPath();
+            ctx.moveTo(prev.state.x, prev.state.y);
+            ctx.quadraticCurveTo(cx, cy, curr.state.x, curr.state.y);
+            ctx.stroke();
+            drawSoftBlob(
+              prev.state.x,
+              prev.state.y,
+              bodyWidth * 0.28,
+              prevColor,
+              alpha * 0.32,
+            );
+            drawSoftBlob(
+              curr.state.x,
+              curr.state.y,
+              bodyWidth * 0.28,
+              currColor,
+              alpha * 0.32,
+            );
+            ctx.restore();
+          }
+        });
+      }
+
+      function drawBodyGlyphEvents(now) {
+        const rect = getScoreRect();
+
+        bodyGlyphEvents.forEach((glyph) => {
+          const state = getGlyphRenderState(glyph, now, rect);
+          if (!state) return;
+
+          const { x, y, alpha, scale, age } = state;
+          const trailSteps = 4;
+          for (let i = trailSteps; i >= 1; i--) {
+            const t = i / trailSteps;
+            const trailX =
+              x - (glyph.motionVecX || 0) * (glyph.trailLength || 26) * t;
+            const trailY =
+              y - (glyph.motionVecY || -0.2) * (glyph.trailLength || 26) * t;
+            drawBodyGlyph(
+              glyph,
+              trailX,
+              trailY,
+              scale * (1 + t * 0.06),
+              alpha * (0.22 + (1 - t) * 0.18),
+              age,
+              {
+                isTrail: true,
+                blurPx: 16 + t * 13,
+              },
+            );
+          }
+
+          drawBodyGlyph(glyph, x, y, scale, alpha, age, {
+            isTrail: false,
+            blurPx: 6,
+          });
+        });
+      }
+
+      function drawBodyGlyph(glyph, x, y, scale, alpha, age, options = {}) {
+        const p = glyph.parts;
+        const unit = 76 * scale;
+
+        const pos = {
+          shoulderL: { x: -unit * 0.95, y: -unit * 1.45 },
+          shoulderR: { x: unit * 0.95, y: -unit * 1.45 },
+
+          handL: { x: -unit * 2.05, y: -unit * 0.65 },
+          handR: { x: unit * 2.05, y: -unit * 0.65 },
+
+          hip: { x: 0, y: 0 },
+
+          kneeL: { x: -unit * 0.66, y: unit * 1.15 },
+          kneeR: { x: unit * 0.66, y: unit * 1.15 },
+
+          footL: { x: -unit * 0.98, y: unit * 2.15 },
+          footR: { x: unit * 0.98, y: unit * 2.15 },
+        };
+
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate((glyph.spin || 0) * age * 0.16);
+        ctx.globalAlpha = alpha;
+        ctx.filter = `blur(${options.blurPx || 0}px)`;
+
+        if (p.shoulderL.active) {
+          drawMiniArch(
+            pos.shoulderL.x,
+            pos.shoulderL.y,
+            unit * 0.35,
+            DESIGN.colors.shoulder,
+            alpha,
+            p.shoulderL.level,
+          );
+        }
+
+        if (p.shoulderR.active) {
+          drawMiniArch(
+            pos.shoulderR.x,
+            pos.shoulderR.y,
+            unit * 0.35,
+            DESIGN.colors.shoulder,
+            alpha,
+            p.shoulderR.level,
+          );
+        }
+
+        if (p.handL.active) {
+          drawMiniDisc(
+            pos.handL.x,
+            pos.handL.y,
+            unit * 0.34,
+            "L",
+            DESIGN.colors.hand,
+            alpha,
+            p.handL.level,
+          );
+        }
+
+        if (p.handR.active) {
+          drawMiniDisc(
+            pos.handR.x,
+            pos.handR.y,
+            unit * 0.34,
+            "R",
+            DESIGN.colors.hand,
+            alpha,
+            p.handR.level,
+          );
+        }
+
+        if (p.hip.active) {
+          drawMiniTwin(
+            pos.hip.x,
+            pos.hip.y,
+            unit * 0.38,
+            DESIGN.colors.hip,
+            alpha,
+            p.hip.level,
+          );
+        }
+
+        if (p.kneeL.active) {
+          drawMiniDome(
+            pos.kneeL.x,
+            pos.kneeL.y,
+            unit * 0.34,
+            DESIGN.colors.knee,
+            alpha,
+            p.kneeL.level,
+          );
+        }
+
+        if (p.kneeR.active) {
+          drawMiniDome(
+            pos.kneeR.x,
+            pos.kneeR.y,
+            unit * 0.34,
+            DESIGN.colors.knee,
+            alpha,
+            p.kneeR.level,
+          );
+        }
+
+        if (p.footL.active) {
+          drawMiniPoint(
+            pos.footL.x,
+            pos.footL.y,
+            unit * 0.36,
+            "L",
+            DESIGN.colors.foot,
+            alpha,
+            p.footL.level,
+          );
+        }
+
+        if (p.footR.active) {
+          drawMiniPoint(
+            pos.footR.x,
+            pos.footR.y,
+            unit * 0.36,
+            "R",
+            DESIGN.colors.foot,
+            alpha,
+            p.footR.level,
+          );
+        }
+
+        ctx.restore();
+      }
+
+      function drawBodyGlyphSkeleton(pos, alpha) {
+        return;
+      }
+
+      function applyMiniStyle(colorHex, alpha, level) {
+        const c = hexToRgb(colorHex);
+
+        ctx.shadowColor = `rgba(${c.r},${c.g},${c.b},${0.28 + level * 0.26})`;
+        ctx.shadowBlur = 42 + level * 58;
+
+        ctx.strokeStyle = `rgba(255,255,255,0)`;
+        ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${0.52 + alpha * 0.38})`;
+        ctx.lineWidth = 0;
+
+        return c;
+      }
+
+      function makeSoftGradient(x, y, size, colorHex, alpha, energy = 0.5) {
+        const c = hexToRgb(colorHex);
+        const g = ctx.createRadialGradient(
+          x - size * 0.22,
+          y - size * 0.24,
+          0,
+          x,
+          y,
+          size * 1.7,
+        );
+        g.addColorStop(
+          0,
+          `rgba(255,255,255,${(0.18 + energy * 0.14) * alpha})`,
+        );
+        g.addColorStop(
+          0.18,
+          `rgba(${Math.min(c.r + 28 + energy * 26, 255)},${Math.min(c.g + 20 + energy * 22, 255)},${Math.min(c.b + 32 + energy * 26, 255)},${(0.72 + energy * 0.2) * alpha})`,
+        );
+        g.addColorStop(
+          0.58,
+          `rgba(${c.r},${c.g},${c.b},${(0.52 + energy * 0.28) * alpha})`,
+        );
+        g.addColorStop(1, `rgba(${c.r},${c.g},${c.b},${0.01 * alpha})`);
+        return g;
+      }
+
+      function drawMiniArch(x, y, size, colorHex, alpha, level) {
+        ctx.save();
+        ctx.translate(x, y);
+        applyMiniStyle(colorHex, alpha, level);
+        ctx.fillStyle = makeSoftGradient(
+          0,
+          0,
+          size * 1.25,
+          colorHex,
+          alpha,
+          level,
+        );
+
+        ctx.beginPath();
+        ctx.moveTo(-size, size * 0.28);
+        ctx.quadraticCurveTo(0, -size * 0.8, size, size * 0.28);
+        ctx.lineTo(size * 0.55, size * 0.28);
+        ctx.quadraticCurveTo(0, -size * 0.35, -size * 0.55, size * 0.28);
+        ctx.closePath();
+
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function drawMiniDisc(x, y, size, side, colorHex, alpha, level) {
+        ctx.save();
+        ctx.translate(x, y);
+        applyMiniStyle(colorHex, alpha * (side === "L" ? 0.84 : 1), level);
+        ctx.fillStyle = makeSoftGradient(
+          0,
+          0,
+          size * 1.45,
+          colorHex,
+          alpha * (side === "L" ? 0.84 : 1),
+          level,
+        );
+
+        ctx.beginPath();
+        ctx.arc(0, 0, size * 0.98, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function drawMiniTwin(x, y, size, colorHex, alpha, level) {
+        ctx.save();
+        ctx.translate(x, y);
+        applyMiniStyle(colorHex, alpha, level);
+        ctx.fillStyle = makeSoftGradient(
+          0,
+          0,
+          size * 1.9,
+          colorHex,
+          alpha,
+          level,
+        );
+
+        // 참고 이미지처럼 좌우 두 개의 둥근 엉덩이 볼륨이 하나의 실루엣으로 붙어 있는 형태.
+        const rx = size * 0.78;
+        const ry = size * 0.66;
+        const gap = size * 0.2;
+
+        ctx.beginPath();
+        ctx.moveTo(0, -ry * 0.95);
+        ctx.bezierCurveTo(
+          rx * 0.32,
+          -ry * 1.02,
+          rx + gap * 0.18,
+          -ry * 0.82,
+          rx + gap * 0.28,
+          0,
+        );
+        ctx.bezierCurveTo(
+          rx + gap * 0.18,
+          ry * 0.82,
+          rx * 0.32,
+          ry * 1.02,
+          0,
+          ry * 0.95,
+        );
+        ctx.bezierCurveTo(
+          -rx * 0.32,
+          ry * 1.02,
+          -rx - gap * 0.18,
+          ry * 0.82,
+          -rx - gap * 0.28,
+          0,
+        );
+        ctx.bezierCurveTo(
+          -rx - gap * 0.18,
+          -ry * 0.82,
+          -rx * 0.32,
+          -ry * 1.02,
+          0,
+          -ry * 0.95,
+        );
+        ctx.closePath();
+        ctx.fill();
+
+        // 가운데 살짝 들어간 연결감을 아주 약하게 강조.
+        ctx.fillStyle = `rgba(255,255,255,${0.08 * alpha})`;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, size * 0.16, size * 0.32, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.restore();
+      }
+
+      function drawMiniDome(x, y, size, colorHex, alpha, level) {
+        ctx.save();
+        ctx.translate(x, y);
+        applyMiniStyle(colorHex, alpha, level);
+        ctx.fillStyle = makeSoftGradient(
+          0,
+          0,
+          size * 1.52,
+          colorHex,
+          alpha,
+          level,
+        );
+
+        const w = size * 1.16;
+        const h = size * 0.92;
+        ctx.beginPath();
+        ctx.moveTo(-w, h * 0.34);
+        ctx.bezierCurveTo(
+          -w * 0.92,
+          -h * 0.28,
+          -w * 0.42,
+          -h * 0.92,
+          0,
+          -h * 0.92,
+        );
+        ctx.bezierCurveTo(
+          w * 0.42,
+          -h * 0.92,
+          w * 0.92,
+          -h * 0.28,
+          w,
+          h * 0.34,
+        );
+        ctx.lineTo(-w, h * 0.34);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function drawMiniPoint(x, y, size, side, colorHex, alpha, level) {
+        ctx.save();
+        ctx.translate(x, y);
+        applyMiniStyle(colorHex, alpha * (side === "L" ? 0.84 : 1), level);
+        ctx.fillStyle = makeSoftGradient(
+          0,
+          0,
+          size * 1.5,
+          colorHex,
+          alpha * (side === "L" ? 0.84 : 1),
+          level,
+        );
+
+        const w = size * 0.98;
+        const h = size * 1.08;
+        ctx.beginPath();
+        ctx.moveTo(0, -h);
+        ctx.quadraticCurveTo(w * 0.84, -h * 0.08, w * 0.54, h * 0.68);
+        ctx.quadraticCurveTo(0, h * 1.02, -w * 0.54, h * 0.68);
+        ctx.quadraticCurveTo(-w * 0.84, -h * 0.08, 0, -h);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function playBodyGlyphSound(glyph) {
+        if (!audioReady) return;
+
+        const now = Tone.now();
+        const energy = glyph.energy;
+        const softVelocity = 0.18 + energy * 0.58;
+
+        // 이벤트 사운드는 이제 짧게 끊기는 트리거가 아니라,
+        // 긴 잔향을 가진 부드러운 accent로만 사용합니다.
+        if (glyph.parts.hip.active) {
+          bodySynth.triggerAttackRelease("C2", "1n", now, softVelocity * 0.42);
+        }
+
+        if (glyph.parts.handL.active || glyph.parts.handR.active) {
+          signalSynth.triggerAttackRelease(
+            "E4",
+            "1n",
+            now + 0.01,
+            softVelocity * 0.92,
+          );
+        }
+
+        if (glyph.parts.kneeL.active || glyph.parts.kneeR.active) {
+          signalSynth.triggerAttackRelease(
+            "A3",
+            "2n",
+            now + 0.02,
+            softVelocity * 0.58,
+          );
+        }
+
+        if (glyph.parts.footL.active || glyph.parts.footR.active) {
+          bodySynth.triggerAttackRelease("G1", "1n", now, softVelocity * 0.36);
+        }
+
+        const targetAir = Math.min(0.002 + energy * 0.035, 0.045);
+        const targetDrone = Math.min(0.025 + energy * 0.09, 0.12);
+        const targetShimmer = Math.min(0.035 + energy * 0.16, 0.18);
+
+        airGain.gain.rampTo(targetAir, 0.55);
+        droneGain.gain.rampTo(targetDrone, 0.65);
+        breathGain.gain.rampTo(0.004 + energy * 0.028, 0.6);
+        squealGain.gain.rampTo(0.002 + energy * 0.018, 0.9);
+        ringGain.gain.rampTo(0.002 + energy * 0.016, 0.9);
+        shimmerGain.gain.rampTo(targetShimmer, 0.7);
+
+        filter.frequency.rampTo(720 + energy * 1200, 0.9);
+        squealOsc.frequency.rampTo(260 + energy * 420, 1.1);
+        ringOsc.frequency.rampTo(360 + energy * 540, 1.1);
+        reverb.wet.rampTo(0.68 + energy * 0.16, 1.2);
+        delay.feedback.rampTo(0.28 + energy * 0.12, 1.0);
+      }
+
+      function getCurrentSeconds() {
+        return (performance.now() - startTime) / 1000;
+      }
+
+      // --------------------------------
+      // Pose to movement
+      // --------------------------------
+
+      function updateTracksFromPoses(poses, now) {
+        const validPoses = poses
+          .filter((pose) => (pose.score ?? 1) > 0.12)
+          .slice(0, MAX_PEOPLE);
+
+        validPoses.forEach((pose) => {
+          const center = getPoseCenter(pose);
+          if (!center) return;
+
+          const track = getOrCreatePersonTrack(center, now);
+          track.centerVx = center.x - track.centerX;
+          track.centerVy = center.y - track.centerY;
+          track.prevCenterX = track.centerX;
+          track.prevCenterY = track.centerY;
+          track.centerX = center.x;
+          track.centerY = center.y;
+          track.lastSeen = now;
+
+          updateJointsFromPose(pose, now, track.joints);
+          createBodyGlyphEvent(now, track);
+        });
+
+        cleanupPersonTracks(now);
+      }
+
+      function getPoseCenter(pose) {
+        const names = [
+          "left_shoulder",
+          "right_shoulder",
+          "left_hip",
+          "right_hip",
+        ];
+
+        let x = 0;
+        let y = 0;
+        let count = 0;
+
+        names.forEach((name) => {
+          const keypoint = pose.keypoints.find((p) => p.name === name);
+          if (!keypoint || (keypoint.score || 0) < 0.2) return;
+
+          x += mapVideoXToCanvas(keypoint.x);
+          y += mapVideoYToCanvas(keypoint.y);
+          count++;
+        });
+
+        if (count === 0) return null;
+
+        return {
+          x: x / count,
+          y: y / count,
+        };
+      }
+
+      function getOrCreatePersonTrack(center, now) {
+        let bestTrack = null;
+        let bestDistance = Infinity;
+
+        personTracks.forEach((track) => {
+          const dx = center.x - track.centerX;
+          const dy = center.y - track.centerY;
+          const distance = Math.sqrt(dx * dx + dy * dy);
+
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            bestTrack = track;
+          }
+        });
+
+        if (bestTrack && bestDistance < 190) {
+          return bestTrack;
+        }
+
+        const track = {
+          id: nextTrackId++,
+          centerX: center.x,
+          centerY: center.y,
+          prevCenterX: center.x,
+          prevCenterY: center.y,
+          centerVx: 0,
+          centerVy: 0,
+          lastSeen: now,
+          lastBodyGlyphTime: -Infinity,
+          joints: createJointMap(),
+        };
+
+        personTracks.push(track);
+        return track;
+      }
+
+      function cleanupPersonTracks(now) {
+        for (let i = personTracks.length - 1; i >= 0; i--) {
+          if (now - personTracks[i].lastSeen > 1.2) {
+            personTracks.splice(i, 1);
+          }
+        }
+      }
+
+      function updateJointsFromPose(pose, now, joints = trackedJoints) {
+        pose.keypoints.forEach((keypoint) => {
+          if (!joints[keypoint.name]) return;
+
+          const mappedX = mapVideoXToCanvas(keypoint.x);
+          const mappedY = mapVideoYToCanvas(keypoint.y);
+
+          updateJointMovement(
+            joints[keypoint.name],
+            mappedX,
+            mappedY,
+            keypoint.score || 0,
+            now,
+          );
+        });
+      }
+
+      function readJointPart(name, joints = trackedJoints) {
+        const joint = joints[name];
+
+        if (!joint || !joint.visible) {
+          return {
+            active: false,
+            level: 0,
+            direction: 0,
+            x: 0.5,
+            y: 0.5,
+          };
+        }
+
+        const threshold = getLaneThresholdFromJoint(name);
+
+        return {
+          active: joint.level > threshold,
+          level: joint.level,
+          direction: joint.direction,
+          x: joint.x / width,
+          y: joint.y / height,
+        };
+      }
+
+      function combineJointPair(leftName, rightName, joints = trackedJoints) {
+        const left = readJointPart(leftName, joints);
+        const right = readJointPart(rightName, joints);
+
+        return {
+          left,
+          right,
+          active: left.active || right.active,
+          level: Math.max(left.level, right.level),
+        };
+      }
+
+      function getCurrentBodyParts(joints = trackedJoints) {
+        const shoulder = combineJointPair(
+          "left_shoulder",
+          "right_shoulder",
+          joints,
+        );
+        const hand = combineJointPair("left_wrist", "right_wrist", joints);
+        const hip = combineJointPair("left_hip", "right_hip", joints);
+        const knee = combineJointPair("left_knee", "right_knee", joints);
+        const foot = combineJointPair("left_ankle", "right_ankle", joints);
+
+        return {
+          shoulderL: shoulder.left,
+          shoulderR: shoulder.right,
+          handL: hand.left,
+          handR: hand.right,
+
+          hip: {
+            active: hip.active,
+            level: hip.level,
+            direction: 0,
+            x: 0.5,
+            y: 0.5,
+          },
+
+          kneeL: knee.left,
+          kneeR: knee.right,
+          footL: foot.left,
+          footR: foot.right,
+        };
+      }
+
+      function createBodyGlyphEvent(now, track) {
+        const sampleInterval = 0.42;
+
+        if (now - track.lastBodyGlyphTime < sampleInterval) return;
+
+        const parts = getCurrentBodyParts(track.joints);
+
+        const energy =
+          parts.shoulderL.level +
+          parts.shoulderR.level +
+          parts.handL.level +
+          parts.handR.level +
+          parts.hip.level +
+          parts.kneeL.level +
+          parts.kneeR.level +
+          parts.footL.level +
+          parts.footR.level;
+
+        const avgEnergy = energy / 9;
+
+        if (avgEnergy < 0.055) return;
+
+        const motion = getGlyphMotionSignature(parts, track, avgEnergy);
+
+        const glyph = {
+          time: now,
+          personId: track.id,
+          bodyX: Math.min(Math.max(track.centerX / width, 0), 1),
+          energy: avgEnergy,
+          opacityBase: clamp(0.38 + avgEnergy * 0.62, 0.38, 1),
+          motionDriftX: motion.driftX,
+          motionDriftY: motion.driftY,
+          spin: motion.spin,
+          motionVecX: motion.motionVecX,
+          motionVecY: motion.motionVecY,
+          trailLength: motion.trailLength,
+          parts,
+        };
+
+        bodyGlyphEvents.push(glyph);
+        playBodyGlyphSound(glyph);
+
+        track.lastBodyGlyphTime = now;
+
+        removeOldBodyGlyphs(now);
+      }
+
+      function getGlyphMotionSignature(parts, track, avgEnergy) {
+        const activeParts = [
+          parts.shoulderL,
+          parts.shoulderR,
+          parts.handL,
+          parts.handR,
+          parts.hip,
+          parts.kneeL,
+          parts.kneeR,
+          parts.footL,
+          parts.footR,
+        ];
+
+        let vy = 0;
+        let weight = 0;
+
+        activeParts.forEach((part) => {
+          if (!part.active) return;
+          const w = Math.max(part.level, 0.08);
+          vy += Math.sin(part.direction || 0) * w;
+          weight += w;
+        });
+
+        if (weight > 0) {
+          vy /= weight;
+        }
+
+        const centerInfluenceX = clamp(track.centerVx / 120, -0.6, 0.6);
+        const centerInfluenceY = clamp(track.centerVy / 120, -0.6, 0.6);
+
+        // 좌우 꿀렁임을 없애기 위해 x축은 실제 몸 중심 이동이 뚜렷할 때만 반영합니다.
+        let motionVecX = 0;
+        if (Math.abs(centerInfluenceX) > 0.16) {
+          motionVecX = clamp(centerInfluenceX * 1.55, -1.0, 1.0);
+        }
+
+        // 세로 방향은 실제 제스처의 전체 흐름과 중심 이동을 합쳐 반영합니다.
+        let motionVecY = clamp(vy * 0.45 + centerInfluenceY * 0.9, -1.0, 1.0);
+        if (Math.abs(motionVecY) < 0.1) motionVecY = 0;
+
+        const driftX = motionVecX;
+        const driftY = motionVecY * 0.55;
+        const spin = 0;
+
+        return {
+          driftX,
+          driftY,
+          spin,
+          motionVecX,
+          motionVecY,
+          trailLength:
+            18 +
+            avgEnergy * 42 +
+            Math.abs(motionVecX) * 10 +
+            Math.abs(motionVecY) * 14,
+        };
+      }
+
+      function removeOldBodyGlyphs(now) {
+        const keepFrom = now - SCORE_WINDOW_SECONDS - 2;
+
+        for (let i = bodyGlyphEvents.length - 1; i >= 0; i--) {
+          if (bodyGlyphEvents[i].time < keepFrom) {
+            bodyGlyphEvents.splice(i, 1);
+          }
+        }
+      }
+
+      function mapVideoXToCanvas(x) {
+        return (x / video.videoWidth) * width;
+      }
+
+      function mapVideoYToCanvas(y) {
+        return (y / video.videoHeight) * height;
+      }
+
+      function updateJointMovement(joint, x, y, score, now) {
+        if (score < SCORE_THRESHOLD) {
+          joint.visible = false;
+          return;
+        }
+
+        if (!joint.visible) {
+          joint.x = x;
+          joint.y = y;
+          joint.prevX = x;
+          joint.prevY = y;
+          joint.speed = 0;
+          joint.prevSpeed = 0;
+          joint.acceleration = 0;
+          joint.visible = true;
+          return;
+        }
+
+        joint.prevX = joint.x;
+        joint.prevY = joint.y;
+        joint.prevSpeed = joint.speed;
+
+        joint.x = x;
+        joint.y = y;
+
+        const dx = joint.x - joint.prevX;
+        const dy = joint.y - joint.prevY;
+
+        joint.speed = Math.sqrt(dx * dx + dy * dy);
+        joint.acceleration = joint.speed - joint.prevSpeed;
+        joint.direction = Math.atan2(dy, dx);
+
+        const level = getJointMovementLevel(joint.name, joint.speed);
+        joint.level = level;
+      }
+
+      function getJointMovementLevel(name, speed) {
+        let divisor = 70;
+
+        if (name.includes("hip")) divisor = 48;
+        if (name.includes("wrist")) divisor = 95;
+        if (name.includes("shoulder")) divisor = 52;
+        if (name.includes("knee")) divisor = 60;
+        if (name.includes("ankle")) divisor = 62;
+
+        return Math.min(speed / divisor, 1);
+      }
+
+      function getLaneIdFromJoint(name) {
+        if (name.includes("hip")) return "hip";
+        if (name.includes("wrist")) return "hand";
+        if (name.includes("knee")) return "knee";
+        if (name.includes("ankle")) return "foot";
+        if (name.includes("shoulder")) return "shoulder";
+        return null;
+      }
+
+      function getSideFromJoint(name) {
+        if (name.startsWith("left_")) return "L";
+        if (name.startsWith("right_")) return "R";
+        return "C";
+      }
+
+      function getLaneRule(laneId) {
+        return (
+          EVENT_DENSITY[laneId] || {
+            threshold: 0.07,
+            minInterval: 0.16,
+            minGap: 0.16,
+          }
+        );
+      }
+
+      function getLaneThresholdFromJoint(name) {
+        const laneId = getLaneIdFromJoint(name);
+        return getLaneRule(laneId).threshold;
+      }
+
+      function getTriggerInterval(name, level) {
+        const laneId = getLaneIdFromJoint(name);
+        const rule = getLaneRule(laneId);
+        return rule.minInterval + (1 - level) * 0.06;
+      }
+
+      function hasTooCloseEvent(candidate) {
+        const rule = getLaneRule(candidate.laneId);
+
+        for (let i = scoreEvents.length - 1; i >= 0; i--) {
+          const prev = scoreEvents[i];
+
+          if (candidate.time - prev.time > 1.0) break;
+          if (prev.laneId !== candidate.laneId) continue;
+
+          const sameTrack =
+            candidate.laneId === "hip" ? true : prev.side === candidate.side;
+
+          if (!sameTrack) continue;
+
+          if (candidate.time - prev.time < rule.minGap) {
+            return true;
+          }
+        }
+
+        return false;
+      }
+
+      // --------------------------------
+      // Graphic score event
+      // --------------------------------
+
+      function triggerJointEvent(name, joint, level, now) {
+        const minInterval = getTriggerInterval(name, level);
+
+        if (now - joint.lastTriggerTime < minInterval) return;
+
+        const laneId = getLaneIdFromJoint(name);
+        if (!laneId) return;
+
+        const laneIndex = lanes.findIndex((lane) => lane.id === laneId);
+        const lane = lanes[laneIndex];
+
+        const normalizedX = joint.x / width;
+        const normalizedY = joint.y / height;
+
+        const event = {
+          time: now,
+          laneId,
+          laneIndex,
+          jointName: name,
+          side: getSideFromJoint(name),
+          level,
+          direction: joint.direction,
+          acceleration: joint.acceleration,
+          bodyX: normalizedX,
+          bodyY: normalizedY,
+          duration: getEventDuration(laneId, level),
+          shape: lane.shape,
+          color: lane.color,
+        };
+
+        if (hasTooCloseEvent(event)) return;
+
+        scoreEvents.push(event);
+        playSoundEvent(event);
+
+        joint.lastTriggerTime = now;
+
+        removeOldEvents(now);
+      }
+
+      function getEventDuration(laneId, level) {
+        if (laneId === "hip") return 0.48 + level * 1.3;
+        if (laneId === "hand") return 0.12 + level * 0.45;
+        if (laneId === "knee") return 0.25 + level * 0.8;
+        if (laneId === "foot") return 0.35 + level * 1.2;
+        if (laneId === "shoulder") return 0.7 + level * 1.6;
+        return 0.3;
+      }
+
+      function removeOldEvents(now) {
+        const keepFrom = now - SCORE_WINDOW_SECONDS - 2;
+
+        for (let i = scoreEvents.length - 1; i >= 0; i--) {
+          if (scoreEvents[i].time < keepFrom) {
+            scoreEvents.splice(i, 1);
+          }
+        }
+      }
+
+      // --------------------------------
+      // Sound mapping
+      // --------------------------------
+
+      function playSoundEvent(event) {
+        if (!audioReady) return;
+
+        const now = Tone.now();
+        const level = event.level;
+
+        if (event.laneId === "hip") {
+          const note = pickNote(scales.hip, event.bodyX);
+          bodySynth.triggerAttackRelease(note, "8n", now, 0.35 + level * 0.65);
+          filter.frequency.rampTo(220 + level * 1100, 0.12);
+          delay.feedback.rampTo(0.16 + level * 0.26, 0.2);
+        } else if (event.laneId === "hand") {
+          const note = pickNote(scales.hand, event.bodyX);
+          signalSynth.triggerAttackRelease(
+            note,
+            "32n",
+            now,
+            0.25 + level * 0.75,
+          );
+          filter.frequency.rampTo(900 + level * 4800, 0.08);
+          delay.wet.rampTo(0.18 + level * 0.35, 0.12);
+        } else if (event.laneId === "knee") {
+          const note = pickNote(scales.knee, event.bodyY);
+          bodySynth.triggerAttackRelease(note, "16n", now, 0.25 + level * 0.7);
+          filter.frequency.rampTo(300 + level * 1900, 0.08);
+        } else if (event.laneId === "foot") {
+          const note = pickNote(scales.foot, event.bodyX);
+          bodySynth.triggerAttackRelease(note, "8n", now, 0.35 + level * 0.7);
+          // metallic tick removed for softer blurry sound
+          delay.feedback.rampTo(0.18 + level * 0.35, 0.16);
+        } else if (event.laneId === "shoulder") {
+          const note = pickNote(scales.shoulder, event.bodyY);
+          signalSynth.triggerAttackRelease(
+            note,
+            "8n",
+            now,
+            0.15 + level * 0.45,
+          );
+
+          drone.frequency.rampTo(45 + event.bodyY * 60 + level * 35, 0.2);
+          droneGain.gain.rampTo(0.04 + level * 0.26, 0.2);
+          reverb.wet.rampTo(0.3 + level * 0.38, 0.3);
+        }
+      }
+
+      function pickNote(scale, value) {
+        const index = Math.floor(value * scale.length);
+        return scale[Math.min(index, scale.length - 1)];
+      }
+
+      function updateGlobalSound() {
+        let total = 0;
+        let count = 0;
+        let verticalFlow = 0;
+        let horizontalFlow = 0;
+
+        personTracks.forEach((track) => {
+          Object.keys(track.joints).forEach((name) => {
+            const joint = track.joints[name];
+            if (!joint.visible) return;
+
+            const level = getJointMovementLevel(name, joint.speed);
+            total += level;
+            verticalFlow += Math.sin(joint.direction || 0) * level;
+            horizontalFlow += Math.cos(joint.direction || 0) * level;
+            count++;
+          });
+        });
+
+        const bodyEnergy = count > 0 ? total / count : 0;
+        smoothedSoundEnergy = smoothedSoundEnergy * 0.92 + bodyEnergy * 0.08;
+
+        if (!audioReady) return;
+
+        const e = smoothedSoundEnergy;
+        const v = count > 0 ? verticalFlow / count : 0;
+        const h = count > 0 ? horizontalFlow / count : 0;
+
+        // 계속 깔리는 sound bed. 움직임이 없어도 아주 약하게 유지되어 끊김이 줄어듭니다.
+        droneGain.gain.rampTo(0.02 + e * 0.08, 0.45);
+        breathGain.gain.rampTo(0.004 + e * 0.03, 0.45);
+        shimmerGain.gain.rampTo(0.01 + e * 0.05, 0.8);
+        airGain.gain.rampTo(0.01 + e * 0.045, 0.8);
+        squealGain.gain.rampTo(0.002 + e * 0.018, 0.9);
+        ringGain.gain.rampTo(0.002 + e * 0.016, 0.9);
+
+        drone.frequency.rampTo(38 + e * 20 + v * 5, 0.55);
+        breathOsc.frequency.rampTo(44 + e * 18 + v * 8, 0.55);
+        shimmerOsc.frequency.rampTo(180 + e * 420 + h * 60, 0.9);
+        squealOsc.frequency.rampTo(260 + e * 420 + Math.abs(h) * 80, 1.0);
+        ringOsc.frequency.rampTo(360 + e * 520 + Math.abs(v) * 90, 1.0);
+        airFilter.frequency.rampTo(650 + e * 520, 1.0);
+
+        filter.frequency.rampTo(720 + e * 1300, 0.9);
+        delay.wet.rampTo(0.2 + e * 0.12, 0.85);
+        delay.feedback.rampTo(0.28 + e * 0.12, 0.95);
+        reverb.wet.rampTo(0.68 + e * 0.16, 1.1);
+      }
+
+      // --------------------------------
+      // Drawing graphic score
+      // --------------------------------
+
+      function getScoreRect() {
+        return {
+          left: leftMargin,
+          right: width - rightMargin,
+          top: topMargin,
+          bottom: height - bottomMargin,
+          width: width - leftMargin - rightMargin,
+          height: height - topMargin - bottomMargin,
+        };
+      }
+
+      function getSilhouetteCenterX() {
+        const rect = getScoreRect();
+        return rect.left + rect.width * 0.5;
+      }
+
+      function getTrackX(laneId, side, bodyX = 0.5) {
+        const cx = getSilhouetteCenterX();
+        const cfg = BODY_GUIDE[laneId];
+
+        if (!cfg) return cx;
+
+        let x = cx;
+
+        if (laneId === "hip") {
+          x += (bodyX - 0.5) * cfg.jitter * 2;
+          return x;
+        }
+
+        if (side === "L") x -= cfg.spread;
+        else if (side === "R") x += cfg.spread;
+
+        x += (bodyX - 0.5) * cfg.jitter * 2;
+        return x;
+      }
+
+      function drawScoreBackground(now) {
+        ctx.fillStyle = DESIGN.ground;
+        ctx.fillRect(0, 0, width, height);
+
+        const rect = getScoreRect();
+
+        ctx.fillStyle = "rgba(16,17,20,0.86)";
+        ctx.font = "300 28px IBM Plex Sans, system-ui";
+        ctx.fillText("Graphic Score", rect.left, 44);
+
+        const rows = 108;
+        for (let i = 0; i <= rows; i++) {
+          const y = rect.top + (rect.height / rows) * i;
+          ctx.strokeStyle = "rgba(16,17,20,0.045)";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(rect.left, y);
+          ctx.lineTo(rect.right, y);
+          ctx.stroke();
+        }
+      }
+
+      function drawLegendBar(rect) {
+        const panelY = height - PANEL_HEIGHT;
+        const panelH = PANEL_HEIGHT;
+        const panelX = 0;
+        const panelW = width;
+        const itemWidth = panelW / 5;
+        const items = [
+          {
+            id: "hip",
+            label: "HIP · 엉덩이",
+            desc: "중심 / 무게",
+            color: DESIGN.colors.hip,
+          },
+          {
+            id: "hand",
+            label: "HAND · 손",
+            desc: "제스처 / 신호",
+            color: DESIGN.colors.hand,
+          },
+          {
+            id: "knee",
+            label: "KNEE · 무릎",
+            desc: "굽힘 / 리듬",
+            color: DESIGN.colors.knee,
+          },
+          {
+            id: "foot",
+            label: "FOOT · 발",
+            desc: "스텝 / 접지",
+            color: DESIGN.colors.foot,
+          },
+          {
+            id: "shoulder",
+            label: "SHOULDER · 어깨",
+            desc: "확장 / 호흡",
+            color: DESIGN.colors.shoulder,
+          },
+        ];
+
+        ctx.save();
+        ctx.fillStyle = DESIGN.panel;
+        ctx.fillRect(panelX, panelY, panelW, panelH);
+        ctx.strokeStyle = "rgba(16,17,20,0.14)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(panelX, panelY, panelW, panelH);
+
+        items.forEach((item, index) => {
+          const x0 = panelX + index * itemWidth;
+          const cx = x0 + itemWidth * 0.12;
+          const cy = panelY + panelH * 0.45;
+
+          if (index > 0) {
+            ctx.strokeStyle = "rgba(16,17,20,0.12)";
+            ctx.beginPath();
+            ctx.moveTo(x0, panelY + 12);
+            ctx.lineTo(x0, panelY + panelH - 12);
+            ctx.stroke();
+          }
+
+          drawLegendSymbol(item.id, cx + 18, cy - 2, item.color);
+
+          ctx.fillStyle = "rgba(16,17,20,0.9)";
+          ctx.font = "600 12px IBM Plex Sans, system-ui";
+          ctx.textAlign = "left";
+          ctx.fillText(item.label, cx + 42, panelY + 30);
+
+          ctx.fillStyle = "rgba(16,17,20,0.52)";
+          ctx.font = "11px IBM Plex Sans, system-ui";
+          ctx.fillText(item.desc, cx + 42, panelY + 48);
+        });
+        ctx.restore();
+      }
+
+      function drawLegendSymbol(id, x, y, colorHex) {
+        const alpha = 1;
+        const level = 0.9;
+        const size = 18;
+
+        if (id === "hip") {
+          drawMiniTwin(x, y, size, colorHex, alpha, level);
+        } else if (id === "hand") {
+          drawMiniDisc(x, y, size, "R", colorHex, alpha, level);
+        } else if (id === "knee") {
+          drawMiniDome(x, y, size, colorHex, alpha, level);
+        } else if (id === "foot") {
+          drawMiniPoint(x, y, size, "R", colorHex, alpha, level);
+        } else if (id === "shoulder") {
+          drawMiniArch(x, y, size, colorHex, alpha, level);
+        }
+      }
+
+      function drawArchitecturalGrid() {
+        return;
+      }
+
+      function drawTopLegend() {
+        return;
+      }
+
+      function drawBottomLegend() {
+        return;
+      }
+
+      function drawStairBackground() {
+        return;
+      }
+
+      function drawSilhouetteGuide() {
+        return;
+      }
+
+      function drawPlayhead() {
+        const rect = getScoreRect();
+        const y = height - PANEL_HEIGHT;
+
+        // 하단 UI 바로 위에 붙는 soft fade. 더 이상 패널과 떨어져 보이지 않게 함.
+        const gradient = ctx.createLinearGradient(0, y - 72, 0, y);
+        gradient.addColorStop(0, "rgba(255,255,255,0)");
+        gradient.addColorStop(0.42, "rgba(255,255,255,0.18)");
+        gradient.addColorStop(0.72, "rgba(255,255,255,0.68)");
+        gradient.addColorStop(1, "rgba(255,255,255,1)");
+
+        ctx.save();
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, y - 72, width, 72);
+        ctx.strokeStyle = "rgba(16,17,20,0.12)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function drawScoreEvents(now) {
+        const rect = getScoreRect();
+
+        scoreEvents.forEach((event) => {
+          const age = now - event.time;
+
+          if (age < 0 || age > SCORE_WINDOW_SECONDS) return;
+
+          const x = getTrackX(event.laneId, event.side, event.bodyX);
+          const y = rect.bottom - (age / SCORE_WINDOW_SECONDS) * rect.height;
+
+          const size = 7 + event.level * 24;
+          const durationHeight =
+            (event.duration / SCORE_WINDOW_SECONDS) * rect.height;
+          const alpha = 1 - age / SCORE_WINDOW_SECONDS;
+
+          drawEventShape(event, x, y, size, durationHeight, alpha);
+        });
+      }
+
+      function drawEventShape(event, x, y, size, durationHeight, alpha) {
+        const color = hexToRgb(event.color);
+        const glow = event.level * 30;
+
+        ctx.save();
+
+        ctx.shadowColor = `rgba(${color.r},${color.g},${color.b},${
+          0.16 + event.level * 0.54
+        })`;
+        ctx.shadowBlur = glow;
+
+        ctx.translate(x, y);
+
+        if (
+          event.laneId !== "hip" &&
+          event.laneId !== "knee" &&
+          event.laneId !== "shoulder"
+        ) {
+          ctx.rotate(event.direction);
+        }
+
+        ctx.strokeStyle = `rgba(${color.r},${color.g},${color.b},${
+          0.28 + alpha * 0.72
+        })`;
+        ctx.fillStyle = `rgba(${color.r},${color.g},${color.b},${
+          0.08 + alpha * 0.5
+        })`;
+        ctx.lineWidth = 2.4;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+
+        if (event.shape === "twin") {
+          drawTwin(size, color, alpha);
+        } else if (event.shape === "disc") {
+          drawDisc(size, event.side, color, alpha);
+        } else if (event.shape === "dome") {
+          drawDome(size, color, alpha);
+        } else if (event.shape === "point") {
+          drawPoint(size, event.side, color, alpha);
+        } else if (event.shape === "arch") {
+          drawArch(size, durationHeight, color, alpha);
+        }
+
+        ctx.restore();
+
+        if (event.acceleration > 18) {
+          ctx.beginPath();
+          ctx.arc(x, y, size * 1.8, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(${color.r},${color.g},${color.b},${
+            alpha * 0.4
+          })`;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+      }
+
+      function drawTwin(size, color, alpha) {
+        ctx.save();
+        ctx.fillStyle = `rgba(${color.r},${color.g},${color.b},${
+          0.2 + alpha * 0.58
+        })`;
+        ctx.strokeStyle = `rgba(${color.r},${color.g},${color.b},${
+          0.42 + alpha * 0.58
+        })`;
+
+        // 하나의 명확한 엉덩이/중심 도형. 겹친 두 원 표현 제거.
+        ctx.beginPath();
+        ctx.ellipse(0, 0, size * 0.95, size * 0.58, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.restore();
+      }
+
+      function drawDisc(size, side, color, alpha) {
+        const r = size * 0.68;
+
+        ctx.save();
+
+        if (side === "L") {
+          ctx.fillStyle = "rgba(0,0,0,0)";
+          ctx.strokeStyle = `rgba(${color.r},${color.g},${color.b},${
+            0.45 + alpha * 0.55
+          })`;
+
+          ctx.beginPath();
+          ctx.arc(0, 0, r, 0, Math.PI * 2);
+          ctx.stroke();
+
+          ctx.beginPath();
+          ctx.arc(0, 0, r * 0.42, 0, Math.PI * 2);
+          ctx.stroke();
+        } else {
+          ctx.fillStyle = `rgba(${color.r},${color.g},${color.b},${
+            0.22 + alpha * 0.62
+          })`;
+          ctx.strokeStyle = `rgba(${color.r},${color.g},${color.b},${
+            0.5 + alpha * 0.5
+          })`;
+
+          ctx.beginPath();
+          ctx.arc(0, 0, r, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        }
+
+        ctx.restore();
+      }
+
+      function drawDome(size, color, alpha) {
+        const w = size * 1.7;
+        const h = size * 1.02;
+
+        ctx.save();
+        ctx.fillStyle = `rgba(${color.r},${color.g},${color.b},${
+          0.18 + alpha * 0.54
+        })`;
+        ctx.strokeStyle = `rgba(${color.r},${color.g},${color.b},${
+          0.42 + alpha * 0.58
+        })`;
+
+        ctx.beginPath();
+        ctx.moveTo(-w * 0.5, h * 0.42);
+        ctx.quadraticCurveTo(0, -h * 0.92, w * 0.5, h * 0.42);
+        ctx.lineTo(-w * 0.5, h * 0.42);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.restore();
+      }
+
+      function drawPoint(size, side, color, alpha) {
+        const r = size * 0.88;
+
+        ctx.save();
+
+        if (side === "L") {
+          ctx.fillStyle = "rgba(0,0,0,0)";
+          ctx.strokeStyle = `rgba(${color.r},${color.g},${color.b},${
+            0.5 + alpha * 0.5
+          })`;
+        } else {
+          ctx.fillStyle = `rgba(${color.r},${color.g},${color.b},${
+            0.24 + alpha * 0.6
+          })`;
+          ctx.strokeStyle = `rgba(${color.r},${color.g},${color.b},${
+            0.5 + alpha * 0.5
+          })`;
+        }
+
+        ctx.beginPath();
+        ctx.moveTo(r, 0);
+        ctx.lineTo(-r * 0.55, -r * 0.68);
+        ctx.lineTo(-r * 0.42, r * 0.7);
+        ctx.closePath();
+
+        if (side === "R") ctx.fill();
+        ctx.stroke();
+
+        ctx.restore();
+      }
+
+      function drawArch(size, durationHeight, color, alpha) {
+        const w = size * 1.6;
+        const h = Math.max(size * 0.7, durationHeight * 0.18);
+
+        ctx.save();
+        ctx.strokeStyle = `rgba(${color.r},${color.g},${color.b},${
+          0.42 + alpha * 0.58
+        })`;
+        ctx.fillStyle = `rgba(${color.r},${color.g},${color.b},${
+          0.1 + alpha * 0.28
+        })`;
+
+        ctx.beginPath();
+        ctx.moveTo(-w * 0.5, h * 0.26);
+        ctx.quadraticCurveTo(0, -h * 0.62, w * 0.5, h * 0.26);
+        ctx.lineTo(w * 0.28, h * 0.26);
+        ctx.quadraticCurveTo(0, -h * 0.28, -w * 0.28, h * 0.26);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.restore();
+      }
+
+      function clamp(value, min, max) {
+        return Math.min(Math.max(value, min), max);
+      }
+
+      function hexToRgb(hex) {
+        const clean = hex.replace("#", "");
+        const value = parseInt(clean, 16);
+
+        return {
+          r: (value >> 16) & 255,
+          g: (value >> 8) & 255,
+          b: value & 255,
+        };
+      }
+
+      // --------------------------------
+      // Resize
+      // --------------------------------
+
+      window.addEventListener("resize", () => {
+        width = window.innerWidth;
+        height = window.innerHeight;
+
+        canvas.width = width;
+        canvas.height = height;
+      });
+    </script>
+  </body>
+</html>

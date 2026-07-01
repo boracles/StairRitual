@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-    <title>Pose Graphic Score Sound</title>
+    <title>Alien Signal</title>
 
     <style>
       html,
@@ -47,6 +47,17 @@
         background: #000000;
       }
 
+      #videoOverlay {
+        position: fixed;
+        right: 24px;
+        bottom: 138px;
+        width: 260px;
+        height: auto;
+        border-radius: 12px;
+        z-index: 8;
+        pointer-events: none;
+      }
+
       #startButton {
         position: fixed;
         left: 50%;
@@ -78,6 +89,7 @@
   <body>
     <canvas id="scoreCanvas"></canvas>
     <video id="video" autoplay playsinline muted></video>
+    <canvas id="videoOverlay"></canvas>
 
     <button id="startButton">START GRAPHIC SCORE</button>
 
@@ -94,6 +106,8 @@
 
     <script>
       const video = document.getElementById("video");
+      const videoOverlay = document.getElementById("videoOverlay");
+      const videoOverlayCtx = videoOverlay.getContext("2d");
       const canvas = document.getElementById("scoreCanvas");
       const ctx = canvas.getContext("2d");
       const startButton = document.getElementById("startButton");
@@ -124,10 +138,12 @@
         grid: "rgba(16,17,20,0.035)",
 
         colors: {
+          head: "#C5B4FF", // light lavender
           shoulder: "#6CCBFF", // airy sky blue
+          elbow: "#58D66A", // fresh green
           hand: "#F3E70A", // vivid yellow
           hip: "#FF9DB2", // soft pink
-          knee: "#16D8B8", // aqua green
+          knee: "#FF9A4D", // warm orange
           foot: "#FF0A8A", // vivid magenta
         },
       };
@@ -139,7 +155,9 @@
       const bottomMargin = PANEL_HEIGHT;
 
       const BODY_GUIDE = {
+        head: { spread: 0, jitter: 8 },
         shoulder: { spread: 64, jitter: 10 },
+        elbow: { spread: 112, jitter: 12 },
         hand: { spread: 150, jitter: 14 },
         hip: { spread: 0, jitter: 8 },
         knee: { spread: 42, jitter: 8 },
@@ -147,7 +165,9 @@
       };
 
       const EVENT_DENSITY = {
+        head: { threshold: 0.06, minInterval: 0.22, minGap: 0.2 },
         shoulder: { threshold: 0.11, minInterval: 0.24, minGap: 0.22 },
+        elbow: { threshold: 0.035, minInterval: 0.14, minGap: 0.12 },
         hand: { threshold: 0.07, minInterval: 0.14, minGap: 0.14 },
         hip: { threshold: 0.07, minInterval: 0.22, minGap: 0.2 },
         knee: { threshold: 0.08, minInterval: 0.18, minGap: 0.18 },
@@ -156,12 +176,28 @@
 
       const lanes = [
         {
+          id: "head",
+          label: "HEAD · 머리",
+          token: "ORB",
+          joints: ["nose", "left_eye", "right_eye", "left_ear", "right_ear"],
+          shape: "head",
+          color: DESIGN.colors.head,
+        },
+        {
           id: "shoulder",
           label: "SHOULDER · 어깨",
           token: "ARCH",
           joints: ["left_shoulder", "right_shoulder"],
           shape: "arch",
           color: DESIGN.colors.shoulder,
+        },
+        {
+          id: "elbow",
+          label: "ELBOW · 팔꿈치",
+          token: "HINGE · L/R",
+          joints: ["left_elbow", "right_elbow"],
+          shape: "elbow",
+          color: DESIGN.colors.elbow,
         },
         {
           id: "hand",
@@ -198,8 +234,15 @@
       ];
 
       const jointNames = [
+        "nose",
+        "left_eye",
+        "right_eye",
+        "left_ear",
+        "right_ear",
         "left_hip",
         "right_hip",
+        "left_elbow",
+        "right_elbow",
         "left_wrist",
         "right_wrist",
         "left_knee",
@@ -411,6 +454,7 @@
         });
 
         await video.play();
+        setupVideoOverlayCanvas();
       }
 
       async function startPoseModel() {
@@ -474,8 +518,10 @@
 
             if (poses.length > 0) {
               updateTracksFromPoses(poses, now);
+              drawCameraPoseOverlay(poses);
             } else {
               cleanupPersonTracks(now);
+              clearCameraPoseOverlay();
             }
           } catch (error) {
             console.error("estimatePoses error", error);
@@ -484,6 +530,8 @@
 
         drawTrajectoryLines(now);
         drawBodyGlyphEvents(now);
+        drawTopFadeOverlay();
+        drawAlienSignalTitle(getScoreRect());
         drawPlayhead();
         drawLegendBar(getScoreRect());
         updateGlobalSound();
@@ -521,8 +569,16 @@
       function getGlyphDominantColor(glyph) {
         const parts = [
           {
+            level: glyph.parts.head.level,
+            color: DESIGN.colors.head,
+          },
+          {
             level: glyph.parts.shoulderL.level + glyph.parts.shoulderR.level,
             color: DESIGN.colors.shoulder,
+          },
+          {
+            level: glyph.parts.elbowL.level + glyph.parts.elbowR.level,
+            color: DESIGN.colors.elbow,
           },
           {
             level: glyph.parts.handL.level + glyph.parts.handR.level,
@@ -540,6 +596,48 @@
         ];
         parts.sort((a, b) => b.level - a.level);
         return parts[0].color;
+      }
+
+      function getGlyphLineColorLayers(glyph) {
+        const layers = [
+          {
+            id: "head",
+            level: glyph.parts.head.level,
+            color: DESIGN.colors.head,
+          },
+          {
+            id: "shoulder",
+            level:
+              (glyph.parts.shoulderL.level + glyph.parts.shoulderR.level) * 0.5,
+            color: DESIGN.colors.shoulder,
+          },
+          {
+            id: "elbow",
+            level: (glyph.parts.elbowL.level + glyph.parts.elbowR.level) * 0.5,
+            color: DESIGN.colors.elbow,
+          },
+          {
+            id: "hand",
+            level: (glyph.parts.handL.level + glyph.parts.handR.level) * 0.5,
+            color: DESIGN.colors.hand,
+          },
+          {
+            id: "hip",
+            level: glyph.parts.hip.level,
+            color: DESIGN.colors.hip,
+          },
+          {
+            id: "knee",
+            level: (glyph.parts.kneeL.level + glyph.parts.kneeR.level) * 0.5,
+            color: DESIGN.colors.knee,
+          },
+          {
+            id: "foot",
+            level: (glyph.parts.footL.level + glyph.parts.footR.level) * 0.5,
+            color: DESIGN.colors.foot,
+          },
+        ];
+        return layers.sort((a, b) => b.level - a.level);
       }
 
       function drawTrajectoryLines(now) {
@@ -564,18 +662,29 @@
           byPerson.get(item.glyph.personId).push(item);
         });
 
-        const drawSoftBlob = (x, y, radius, color, alpha) => {
-          const g = ctx.createRadialGradient(x, y, 0, x, y, radius * 1.6);
-          g.addColorStop(0, `rgba(${color.r},${color.g},${color.b},${alpha})`);
-          g.addColorStop(
-            0.55,
-            `rgba(${color.r},${color.g},${color.b},${alpha * 0.58})`,
+        const drawSoftStamp = (x, y, radius, color, alpha) => {
+          const grad = ctx.createRadialGradient(x, y, 0, x, y, radius * 1.7);
+          grad.addColorStop(
+            0,
+            `rgba(${color.r},${color.g},${color.b},${alpha})`,
           );
-          g.addColorStop(1, `rgba(${color.r},${color.g},${color.b},0)`);
-          ctx.fillStyle = g;
+          grad.addColorStop(
+            0.48,
+            `rgba(${color.r},${color.g},${color.b},${alpha * 0.62})`,
+          );
+          grad.addColorStop(1, `rgba(${color.r},${color.g},${color.b},0)`);
+          ctx.fillStyle = grad;
           ctx.beginPath();
-          ctx.arc(x, y, radius * 1.6, 0, Math.PI * 2);
+          ctx.arc(x, y, radius * 1.7, 0, Math.PI * 2);
           ctx.fill();
+        };
+
+        const pointOnQuad = (t, p0, p1, p2) => {
+          const mt = 1 - t;
+          return {
+            x: mt * mt * p0.x + 2 * mt * t * p1.x + t * t * p2.x,
+            y: mt * mt * p0.y + 2 * mt * t * p1.y + t * t * p2.y,
+          };
         };
 
         byPerson.forEach((items) => {
@@ -584,100 +693,118 @@
           for (let i = 1; i < items.length; i++) {
             const prev = items[i - 1];
             const curr = items[i];
-            const prevColor = hexToRgb(getGlyphDominantColor(prev.glyph));
-            const currColor = hexToRgb(getGlyphDominantColor(curr.glyph));
             const energy = (prev.glyph.energy + curr.glyph.energy) * 0.5;
             const alpha = clamp(
-              Math.min(prev.state.alpha, curr.state.alpha) * 0.96,
-              0.24,
-              0.84,
+              Math.min(prev.state.alpha, curr.state.alpha) * 0.92,
+              0.22,
+              0.78,
             );
 
-            const pulse =
-              0.68 + 0.42 * Math.sin(i * 1.12 + curr.glyph.time * 0.45);
-            const bodyWidth = 16 + energy * 42 + pulse * 12;
-            const auraWidth = bodyWidth * 1.9;
+            const pulseA =
+              0.84 + 0.26 * Math.sin(i * 1.08 + curr.glyph.time * 0.42);
+            const pulseB =
+              0.84 + 0.26 * Math.sin((i + 0.5) * 1.08 + curr.glyph.time * 0.42);
+            const startRadius = 8 + energy * 18 + pulseA * 6;
+            const endRadius = 8 + energy * 18 + pulseB * 6;
 
-            const cx =
-              (prev.state.x + curr.state.x) * 0.5 +
-              ((curr.glyph.motionVecX || 0) + (prev.glyph.motionVecX || 0)) *
-                13;
-            const cy =
-              (prev.state.y + curr.state.y) * 0.5 +
-              ((curr.glyph.motionVecY || 0) + (prev.glyph.motionVecY || 0)) *
-                11;
-
-            const buildGradient = (a0, a1) => {
-              const grad = ctx.createLinearGradient(
-                prev.state.x,
-                prev.state.y,
-                curr.state.x,
-                curr.state.y,
-              );
-              grad.addColorStop(
-                0,
-                `rgba(${prevColor.r},${prevColor.g},${prevColor.b},${a0})`,
-              );
-              grad.addColorStop(
-                1,
-                `rgba(${currColor.r},${currColor.g},${currColor.b},${a1})`,
-              );
-              return grad;
+            const control = {
+              x:
+                (prev.state.x + curr.state.x) * 0.5 +
+                ((curr.glyph.motionVecX || 0) + (prev.glyph.motionVecX || 0)) *
+                  12,
+              y:
+                (prev.state.y + curr.state.y) * 0.5 +
+                ((curr.glyph.motionVecY || 0) + (prev.glyph.motionVecY || 0)) *
+                  10,
             };
 
-            // Soft aura pass
-            ctx.save();
-            ctx.lineCap = "round";
-            ctx.lineJoin = "round";
-            ctx.filter = "blur(22px)";
-            ctx.strokeStyle = buildGradient(alpha * 0.36, alpha * 0.36);
-            ctx.lineWidth = auraWidth;
-            ctx.beginPath();
-            ctx.moveTo(prev.state.x, prev.state.y);
-            ctx.quadraticCurveTo(cx, cy, curr.state.x, curr.state.y);
-            ctx.stroke();
-            drawSoftBlob(
-              prev.state.x,
-              prev.state.y,
-              auraWidth * 0.42,
-              prevColor,
-              alpha * 0.22,
-            );
-            drawSoftBlob(
-              curr.state.x,
-              curr.state.y,
-              auraWidth * 0.42,
-              currColor,
-              alpha * 0.22,
-            );
-            ctx.restore();
+            const p0 = { x: prev.state.x, y: prev.state.y };
+            const p2 = { x: curr.state.x, y: curr.state.y };
+            const approxLen = Math.hypot(p2.x - p0.x, p2.y - p0.y);
+            const steps = Math.max(18, Math.ceil(approxLen / 7));
 
-            // Soft body pass
-            ctx.save();
-            ctx.lineCap = "round";
-            ctx.lineJoin = "round";
-            ctx.filter = "blur(10px)";
-            ctx.strokeStyle = buildGradient(alpha * 0.64, alpha * 0.64);
-            ctx.lineWidth = bodyWidth;
-            ctx.beginPath();
-            ctx.moveTo(prev.state.x, prev.state.y);
-            ctx.quadraticCurveTo(cx, cy, curr.state.x, curr.state.y);
-            ctx.stroke();
-            drawSoftBlob(
-              prev.state.x,
-              prev.state.y,
-              bodyWidth * 0.28,
-              prevColor,
-              alpha * 0.32,
-            );
-            drawSoftBlob(
-              curr.state.x,
-              curr.state.y,
-              bodyWidth * 0.28,
-              currColor,
-              alpha * 0.32,
-            );
-            ctx.restore();
+            const prevLayers = getGlyphLineColorLayers(prev.glyph);
+            const currLayers = getGlyphLineColorLayers(curr.glyph);
+            const layerMap = new Map();
+
+            prevLayers.forEach((layer) => {
+              layerMap.set(layer.id, {
+                id: layer.id,
+                color: layer.color,
+                prevLevel: layer.level,
+                currLevel: 0,
+              });
+            });
+            currLayers.forEach((layer) => {
+              if (!layerMap.has(layer.id)) {
+                layerMap.set(layer.id, {
+                  id: layer.id,
+                  color: layer.color,
+                  prevLevel: 0,
+                  currLevel: layer.level,
+                });
+              } else {
+                layerMap.get(layer.id).currLevel = layer.level;
+              }
+            });
+
+            const activeLayers = [...layerMap.values()]
+              .map((layer) => ({
+                ...layer,
+                avgLevel: (layer.prevLevel + layer.currLevel) * 0.5,
+              }))
+              .filter((layer) => layer.avgLevel > 0.08)
+              .sort((a, b) => b.avgLevel - a.avgLevel)
+              .slice(0, 4);
+
+            if (activeLayers.length === 0) {
+              const fallback = hexToRgb(getGlyphDominantColor(prev.glyph));
+              activeLayers.push({
+                id: "fallback",
+                color: `rgb(${fallback.r},${fallback.g},${fallback.b})`,
+                avgLevel: 1,
+                prevLevel: 1,
+                currLevel: 1,
+              });
+            }
+
+            for (let s = 0; s <= steps; s++) {
+              const t = s / steps;
+              const p = pointOnQuad(t, p0, control, p2);
+              const radius = startRadius + (endRadius - startRadius) * t;
+
+              activeLayers.forEach((layer, index) => {
+                const c = hexToRgb(layer.color);
+                const level =
+                  layer.prevLevel + (layer.currLevel - layer.prevLevel) * t;
+                const layerScale = 0.46 + level * 0.78;
+                const layerAlpha =
+                  alpha * (0.12 + level * 0.2) * (1 - index * 0.08);
+                const layerRadius = radius * layerScale;
+
+                drawSoftStamp(
+                  p.x,
+                  p.y,
+                  layerRadius * 1.08,
+                  c,
+                  layerAlpha * 0.4,
+                );
+                drawSoftStamp(
+                  p.x,
+                  p.y,
+                  layerRadius * 0.72,
+                  c,
+                  layerAlpha * 0.56,
+                );
+                drawSoftStamp(
+                  p.x,
+                  p.y,
+                  layerRadius * 0.4,
+                  c,
+                  layerAlpha * 0.72,
+                );
+              });
+            }
           }
         });
       }
@@ -701,12 +828,12 @@
               glyph,
               trailX,
               trailY,
-              scale * (1 + t * 0.06),
-              alpha * (0.22 + (1 - t) * 0.18),
+              scale * (1 + t * 0.04),
+              alpha * (0.08 + (1 - t) * 0.18),
               age,
               {
                 isTrail: true,
-                blurPx: 16 + t * 13,
+                blurPx: 16 + t * 10,
               },
             );
           }
@@ -723,8 +850,13 @@
         const unit = 76 * scale;
 
         const pos = {
+          head: { x: 0, y: -unit * 2.35 },
+
           shoulderL: { x: -unit * 0.95, y: -unit * 1.45 },
           shoulderR: { x: unit * 0.95, y: -unit * 1.45 },
+
+          elbowL: { x: -unit * 1.5, y: -unit * 0.18 },
+          elbowR: { x: unit * 1.5, y: -unit * 0.18 },
 
           handL: { x: -unit * 2.05, y: -unit * 0.65 },
           handR: { x: unit * 2.05, y: -unit * 0.65 },
@@ -744,11 +876,22 @@
         ctx.globalAlpha = alpha;
         ctx.filter = `blur(${options.blurPx || 0}px)`;
 
+        if (p.head.active) {
+          drawMiniHead(
+            pos.head.x,
+            pos.head.y,
+            unit * 0.14 * (0.82 + p.head.level * 0.72),
+            DESIGN.colors.head,
+            alpha,
+            p.head.level,
+          );
+        }
+
         if (p.shoulderL.active) {
           drawMiniArch(
             pos.shoulderL.x,
             pos.shoulderL.y,
-            unit * 0.35,
+            unit * 0.27 * (0.88 + p.shoulderL.level * 1.1),
             DESIGN.colors.shoulder,
             alpha,
             p.shoulderL.level,
@@ -759,10 +902,34 @@
           drawMiniArch(
             pos.shoulderR.x,
             pos.shoulderR.y,
-            unit * 0.35,
+            unit * 0.27 * (0.88 + p.shoulderR.level * 1.1),
             DESIGN.colors.shoulder,
             alpha,
             p.shoulderR.level,
+          );
+        }
+
+        if (p.elbowL.active) {
+          drawMiniElbow(
+            pos.elbowL.x,
+            pos.elbowL.y,
+            unit * 0.32 * (0.9 + p.elbowL.level * 1.35),
+            "L",
+            DESIGN.colors.elbow,
+            alpha,
+            p.elbowL.level,
+          );
+        }
+
+        if (p.elbowR.active) {
+          drawMiniElbow(
+            pos.elbowR.x,
+            pos.elbowR.y,
+            unit * 0.32 * (0.9 + p.elbowR.level * 1.35),
+            "R",
+            DESIGN.colors.elbow,
+            alpha,
+            p.elbowR.level,
           );
         }
 
@@ -770,7 +937,7 @@
           drawMiniDisc(
             pos.handL.x,
             pos.handL.y,
-            unit * 0.34,
+            unit * 0.25 * (0.86 + p.handL.level * 1.25),
             "L",
             DESIGN.colors.hand,
             alpha,
@@ -782,7 +949,7 @@
           drawMiniDisc(
             pos.handR.x,
             pos.handR.y,
-            unit * 0.34,
+            unit * 0.25 * (0.86 + p.handR.level * 1.25),
             "R",
             DESIGN.colors.hand,
             alpha,
@@ -794,7 +961,7 @@
           drawMiniTwin(
             pos.hip.x,
             pos.hip.y,
-            unit * 0.38,
+            unit * 0.3 * (0.9 + p.hip.level * 1.2),
             DESIGN.colors.hip,
             alpha,
             p.hip.level,
@@ -805,7 +972,7 @@
           drawMiniDome(
             pos.kneeL.x,
             pos.kneeL.y,
-            unit * 0.34,
+            unit * 0.25 * (0.9 + p.kneeL.level * 1.15),
             DESIGN.colors.knee,
             alpha,
             p.kneeL.level,
@@ -816,7 +983,7 @@
           drawMiniDome(
             pos.kneeR.x,
             pos.kneeR.y,
-            unit * 0.34,
+            unit * 0.25 * (0.9 + p.kneeR.level * 1.15),
             DESIGN.colors.knee,
             alpha,
             p.kneeR.level,
@@ -827,7 +994,7 @@
           drawMiniPoint(
             pos.footL.x,
             pos.footL.y,
-            unit * 0.36,
+            unit * 0.26 * (0.88 + p.footL.level * 1.2),
             "L",
             DESIGN.colors.foot,
             alpha,
@@ -839,7 +1006,7 @@
           drawMiniPoint(
             pos.footR.x,
             pos.footR.y,
-            unit * 0.36,
+            unit * 0.26 * (0.88 + p.footR.level * 1.2),
             "R",
             DESIGN.colors.foot,
             alpha,
@@ -856,83 +1023,227 @@
 
       function applyMiniStyle(colorHex, alpha, level) {
         const c = hexToRgb(colorHex);
-
-        ctx.shadowColor = `rgba(${c.r},${c.g},${c.b},${0.28 + level * 0.26})`;
-        ctx.shadowBlur = 42 + level * 58;
-
+        ctx.shadowColor = `rgba(${c.r},${c.g},${c.b},${0.22 + level * 0.18})`;
+        ctx.shadowBlur = 20 + level * 26;
         ctx.strokeStyle = `rgba(255,255,255,0)`;
-        ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${0.52 + alpha * 0.38})`;
+        ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},1)`;
         ctx.lineWidth = 0;
-
         return c;
       }
 
       function makeSoftGradient(x, y, size, colorHex, alpha, energy = 0.5) {
         const c = hexToRgb(colorHex);
-        const g = ctx.createRadialGradient(
-          x - size * 0.22,
-          y - size * 0.24,
-          0,
-          x,
-          y,
-          size * 1.7,
-        );
+        const g = ctx.createRadialGradient(x, y, 0, x, y, size * 1.75);
         g.addColorStop(
           0,
-          `rgba(255,255,255,${(0.18 + energy * 0.14) * alpha})`,
+          `rgba(${c.r},${c.g},${c.b},${Math.min(1, 0.98 * alpha)})`,
         );
         g.addColorStop(
-          0.18,
-          `rgba(${Math.min(c.r + 28 + energy * 26, 255)},${Math.min(c.g + 20 + energy * 22, 255)},${Math.min(c.b + 32 + energy * 26, 255)},${(0.72 + energy * 0.2) * alpha})`,
+          0.36,
+          `rgba(${c.r},${c.g},${c.b},${Math.min(1, 0.96 * alpha)})`,
         );
         g.addColorStop(
-          0.58,
-          `rgba(${c.r},${c.g},${c.b},${(0.52 + energy * 0.28) * alpha})`,
+          0.66,
+          `rgba(${c.r},${c.g},${c.b},${(0.42 + energy * 0.1) * alpha})`,
         );
-        g.addColorStop(1, `rgba(${c.r},${c.g},${c.b},${0.01 * alpha})`);
+        g.addColorStop(1, `rgba(${c.r},${c.g},${c.b},0)`);
         return g;
+      }
+
+      function fillSoftShape(drawShape, colorHex, alpha, level, glowSize = 20) {
+        const c = hexToRgb(colorHex);
+        const coreAlpha = Math.min(1, 0.18 + alpha * 1.35);
+
+        // soft blurry outer edge
+        ctx.save();
+        ctx.filter = `blur(${7 + level * 5}px)`;
+        ctx.shadowColor = `rgba(${c.r},${c.g},${c.b},${0.18 + level * 0.14})`;
+        ctx.shadowBlur = 24 + level * 20;
+        ctx.fillStyle = makeSoftGradient(
+          0,
+          0,
+          glowSize,
+          colorHex,
+          Math.min(1, alpha),
+          level,
+        );
+        ctx.beginPath();
+        drawShape(1.05);
+        ctx.fill();
+        ctx.restore();
+
+        // dense core with opacity variation preserved for trails
+        ctx.save();
+        ctx.filter = "none";
+        ctx.shadowBlur = 0;
+        ctx.shadowColor = "rgba(0,0,0,0)";
+        ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${coreAlpha})`;
+        ctx.beginPath();
+        drawShape(0.98);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function drawMiniHead(x, y, size, colorHex, alpha, level) {
+        ctx.save();
+        ctx.translate(x, y);
+        const c = applyMiniStyle(colorHex, alpha, level);
+        const rayCount = 18;
+        const innerR = size * 0.42;
+        const outerR = size * 0.92;
+        const rayW = size * 0.11;
+        const coreAlpha = Math.min(1, 0.16 + alpha * 1.28);
+
+        // blurry outer aura and rays
+        ctx.save();
+        ctx.filter = `blur(${5 + level * 3}px)`;
+        ctx.lineCap = "round";
+        ctx.strokeStyle = `rgba(${c.r},${c.g},${c.b},${Math.min(1, alpha * 0.52)})`;
+        ctx.lineWidth = rayW * 1.4;
+        for (let i = 0; i < rayCount; i++) {
+          const a = (Math.PI * 2 * i) / rayCount - Math.PI / 2;
+          const x1 = Math.cos(a) * innerR;
+          const y1 = Math.sin(a) * innerR;
+          const x2 = Math.cos(a) * outerR;
+          const y2 = Math.sin(a) * outerR;
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.stroke();
+        }
+        const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, outerR * 1.02);
+        glow.addColorStop(
+          0,
+          `rgba(${c.r},${c.g},${c.b},${Math.min(1, alpha * 0.72)})`,
+        );
+        glow.addColorStop(0.55, `rgba(${c.r},${c.g},${c.b},${alpha * 0.18})`);
+        glow.addColorStop(1, `rgba(${c.r},${c.g},${c.b},0)`);
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(0, 0, outerR * 1.02, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+
+        // crisp core rays
+        ctx.save();
+        ctx.lineCap = "round";
+        ctx.strokeStyle = `rgba(${c.r},${c.g},${c.b},${coreAlpha})`;
+        ctx.lineWidth = rayW;
+        for (let i = 0; i < rayCount; i++) {
+          const a = (Math.PI * 2 * i) / rayCount - Math.PI / 2;
+          const x1 = Math.cos(a) * innerR;
+          const y1 = Math.sin(a) * innerR;
+          const x2 = Math.cos(a) * outerR;
+          const y2 = Math.sin(a) * outerR;
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        // central core
+        fillSoftShape(
+          (m = 1) => {
+            ctx.arc(0, 0, size * 0.42 * m, 0, Math.PI * 2);
+          },
+          colorHex,
+          alpha,
+          level,
+          size * 0.9,
+        );
+
+        ctx.restore();
       }
 
       function drawMiniArch(x, y, size, colorHex, alpha, level) {
         ctx.save();
         ctx.translate(x, y);
         applyMiniStyle(colorHex, alpha, level);
-        ctx.fillStyle = makeSoftGradient(
-          0,
-          0,
-          size * 1.25,
+
+        fillSoftShape(
+          (m = 1) => {
+            ctx.moveTo(-size * m, size * 0.28 * m);
+            ctx.quadraticCurveTo(0, -size * 0.8 * m, size * m, size * 0.28 * m);
+            ctx.lineTo(size * 0.55 * m, size * 0.28 * m);
+            ctx.quadraticCurveTo(
+              0,
+              -size * 0.35 * m,
+              -size * 0.55 * m,
+              size * 0.28 * m,
+            );
+            ctx.closePath();
+          },
           colorHex,
           alpha,
           level,
+          size * 1.35,
         );
 
-        ctx.beginPath();
-        ctx.moveTo(-size, size * 0.28);
-        ctx.quadraticCurveTo(0, -size * 0.8, size, size * 0.28);
-        ctx.lineTo(size * 0.55, size * 0.28);
-        ctx.quadraticCurveTo(0, -size * 0.35, -size * 0.55, size * 0.28);
-        ctx.closePath();
+        ctx.restore();
+      }
 
-        ctx.fill();
+      function drawMiniElbow(x, y, size, side, colorHex, alpha, level) {
+        ctx.save();
+        ctx.translate(x, y);
+        applyMiniStyle(colorHex, alpha, level);
+
+        fillSoftShape(
+          (m = 1) => {
+            const w = size * 1.08 * m;
+            const h = size * 0.72 * m;
+            ctx.moveTo(-w * 0.98, -h * 0.14);
+            ctx.bezierCurveTo(
+              -w * 0.72,
+              -h * 1.0,
+              w * 0.24,
+              -h * 1.08,
+              w * 0.82,
+              -h * 0.38,
+            );
+            ctx.bezierCurveTo(
+              w * 1.12,
+              h * 0.02,
+              w * 0.92,
+              h * 0.72,
+              w * 0.18,
+              h * 0.86,
+            );
+            ctx.bezierCurveTo(
+              -w * 0.54,
+              h * 1.0,
+              -w * 1.08,
+              h * 0.44,
+              -w * 0.98,
+              -h * 0.14,
+            );
+            ctx.closePath();
+          },
+          colorHex,
+          alpha * (side === "L" ? 0.84 : 1),
+          level,
+          size * 1.6,
+        );
+
         ctx.restore();
       }
 
       function drawMiniDisc(x, y, size, side, colorHex, alpha, level) {
         ctx.save();
         ctx.translate(x, y);
-        applyMiniStyle(colorHex, alpha * (side === "L" ? 0.84 : 1), level);
-        ctx.fillStyle = makeSoftGradient(
-          0,
-          0,
-          size * 1.45,
+        const a = alpha * (side === "L" ? 0.84 : 1);
+        applyMiniStyle(colorHex, a, level);
+
+        fillSoftShape(
+          (m = 1) => {
+            ctx.arc(0, 0, size * 0.98 * m, 0, Math.PI * 2);
+          },
           colorHex,
-          alpha * (side === "L" ? 0.84 : 1),
+          a,
           level,
+          size * 1.5,
         );
 
-        ctx.beginPath();
-        ctx.arc(0, 0, size * 0.98, 0, Math.PI * 2);
-        ctx.fill();
         ctx.restore();
       }
 
@@ -940,62 +1251,19 @@
         ctx.save();
         ctx.translate(x, y);
         applyMiniStyle(colorHex, alpha, level);
-        ctx.fillStyle = makeSoftGradient(
-          0,
-          0,
-          size * 1.9,
+        const r = size * 0.74;
+        const offset = size * 0.54;
+
+        fillSoftShape(
+          (m = 1) => {
+            ctx.arc(-offset * m, 0, r * m, 0, Math.PI * 2);
+            ctx.arc(offset * m, 0, r * m, 0, Math.PI * 2);
+          },
           colorHex,
           alpha,
           level,
+          size * 1.55,
         );
-
-        // 참고 이미지처럼 좌우 두 개의 둥근 엉덩이 볼륨이 하나의 실루엣으로 붙어 있는 형태.
-        const rx = size * 0.78;
-        const ry = size * 0.66;
-        const gap = size * 0.2;
-
-        ctx.beginPath();
-        ctx.moveTo(0, -ry * 0.95);
-        ctx.bezierCurveTo(
-          rx * 0.32,
-          -ry * 1.02,
-          rx + gap * 0.18,
-          -ry * 0.82,
-          rx + gap * 0.28,
-          0,
-        );
-        ctx.bezierCurveTo(
-          rx + gap * 0.18,
-          ry * 0.82,
-          rx * 0.32,
-          ry * 1.02,
-          0,
-          ry * 0.95,
-        );
-        ctx.bezierCurveTo(
-          -rx * 0.32,
-          ry * 1.02,
-          -rx - gap * 0.18,
-          ry * 0.82,
-          -rx - gap * 0.28,
-          0,
-        );
-        ctx.bezierCurveTo(
-          -rx - gap * 0.18,
-          -ry * 0.82,
-          -rx * 0.32,
-          -ry * 1.02,
-          0,
-          -ry * 0.95,
-        );
-        ctx.closePath();
-        ctx.fill();
-
-        // 가운데 살짝 들어간 연결감을 아주 약하게 강조.
-        ctx.fillStyle = `rgba(255,255,255,${0.08 * alpha})`;
-        ctx.beginPath();
-        ctx.ellipse(0, 0, size * 0.16, size * 0.32, 0, 0, Math.PI * 2);
-        ctx.fill();
 
         ctx.restore();
       }
@@ -1004,63 +1272,77 @@
         ctx.save();
         ctx.translate(x, y);
         applyMiniStyle(colorHex, alpha, level);
-        ctx.fillStyle = makeSoftGradient(
-          0,
-          0,
-          size * 1.52,
+
+        fillSoftShape(
+          (m = 1) => {
+            const w = size * 1.16 * m;
+            const h = size * 0.92 * m;
+            ctx.moveTo(-w, h * 0.34);
+            ctx.bezierCurveTo(
+              -w * 0.92,
+              -h * 0.28,
+              -w * 0.42,
+              -h * 0.92,
+              0,
+              -h * 0.92,
+            );
+            ctx.bezierCurveTo(
+              w * 0.42,
+              -h * 0.92,
+              w * 0.92,
+              -h * 0.28,
+              w,
+              h * 0.34,
+            );
+            ctx.lineTo(-w, h * 0.34);
+            ctx.closePath();
+          },
           colorHex,
           alpha,
           level,
+          size * 1.56,
         );
 
-        const w = size * 1.16;
-        const h = size * 0.92;
-        ctx.beginPath();
-        ctx.moveTo(-w, h * 0.34);
-        ctx.bezierCurveTo(
-          -w * 0.92,
-          -h * 0.28,
-          -w * 0.42,
-          -h * 0.92,
-          0,
-          -h * 0.92,
-        );
-        ctx.bezierCurveTo(
-          w * 0.42,
-          -h * 0.92,
-          w * 0.92,
-          -h * 0.28,
-          w,
-          h * 0.34,
-        );
-        ctx.lineTo(-w, h * 0.34);
-        ctx.closePath();
-        ctx.fill();
         ctx.restore();
       }
 
       function drawMiniPoint(x, y, size, side, colorHex, alpha, level) {
         ctx.save();
         ctx.translate(x, y);
-        applyMiniStyle(colorHex, alpha * (side === "L" ? 0.84 : 1), level);
-        ctx.fillStyle = makeSoftGradient(
-          0,
-          0,
-          size * 1.5,
+        const a = alpha * (side === "L" ? 0.84 : 1);
+        applyMiniStyle(colorHex, a, level);
+
+        fillSoftShape(
+          (m = 1) => {
+            const w = size * 0.98 * m;
+            const h = size * 1.08 * m;
+            ctx.moveTo(0, -h * 1.02);
+            ctx.bezierCurveTo(
+              w * 0.62,
+              -h * 0.7,
+              w * 0.98,
+              -h * 0.02,
+              w * 0.72,
+              h * 0.62,
+            );
+            ctx.quadraticCurveTo(w * 0.34, h * 0.98, 0, h * 0.96);
+            ctx.quadraticCurveTo(-w * 0.34, h * 0.98, -w * 0.72, h * 0.62);
+            ctx.bezierCurveTo(
+              -w * 0.98,
+              -h * 0.02,
+              -w * 0.62,
+              -h * 0.7,
+              0,
+              -h * 1.02,
+            );
+            ctx.closePath();
+          },
           colorHex,
-          alpha * (side === "L" ? 0.84 : 1),
+          a,
           level,
+          size * 1.6,
         );
 
-        const w = size * 0.98;
-        const h = size * 1.08;
-        ctx.beginPath();
-        ctx.moveTo(0, -h);
-        ctx.quadraticCurveTo(w * 0.84, -h * 0.08, w * 0.54, h * 0.68);
-        ctx.quadraticCurveTo(0, h * 1.02, -w * 0.54, h * 0.68);
-        ctx.quadraticCurveTo(-w * 0.84, -h * 0.08, 0, -h);
-        ctx.closePath();
-        ctx.fill();
         ctx.restore();
       }
 
@@ -1115,6 +1397,121 @@
         ringOsc.frequency.rampTo(360 + energy * 540, 1.1);
         reverb.wet.rampTo(0.68 + energy * 0.16, 1.2);
         delay.feedback.rampTo(0.28 + energy * 0.12, 1.0);
+      }
+
+      function setupVideoOverlayCanvas() {
+        if (!video.videoWidth || !video.videoHeight) return;
+        videoOverlay.width = video.videoWidth;
+        videoOverlay.height = video.videoHeight;
+        videoOverlay.style.height = `${260 * (video.videoHeight / video.videoWidth)}px`;
+      }
+
+      function clearCameraPoseOverlay() {
+        if (!videoOverlay.width || !videoOverlay.height) return;
+        videoOverlayCtx.clearRect(
+          0,
+          0,
+          videoOverlay.width,
+          videoOverlay.height,
+        );
+      }
+
+      function drawCameraPoseOverlay(poses) {
+        if (!video.videoWidth || !video.videoHeight) return;
+        if (
+          videoOverlay.width !== video.videoWidth ||
+          videoOverlay.height !== video.videoHeight
+        ) {
+          setupVideoOverlayCanvas();
+        }
+
+        const pose = poses[0];
+        clearCameraPoseOverlay();
+        if (!pose || !pose.keypoints) return;
+
+        const keypoints = new Map();
+        pose.keypoints.forEach((point) => {
+          if ((point.score || 0) >= 0.22) keypoints.set(point.name, point);
+        });
+
+        const edges = [
+          ["left_ear", "left_eye"],
+          ["left_eye", "nose"],
+          ["nose", "right_eye"],
+          ["right_eye", "right_ear"],
+          ["left_shoulder", "right_shoulder"],
+          ["left_shoulder", "left_elbow"],
+          ["left_elbow", "left_wrist"],
+          ["right_shoulder", "right_elbow"],
+          ["right_elbow", "right_wrist"],
+          ["left_shoulder", "left_hip"],
+          ["right_shoulder", "right_hip"],
+          ["left_hip", "right_hip"],
+          ["left_hip", "left_knee"],
+          ["left_knee", "left_ankle"],
+          ["right_hip", "right_knee"],
+          ["right_knee", "right_ankle"],
+        ];
+
+        videoOverlayCtx.save();
+        videoOverlayCtx.lineCap = "round";
+        videoOverlayCtx.lineJoin = "round";
+        videoOverlayCtx.shadowBlur = 8;
+        videoOverlayCtx.shadowColor = "rgba(0,0,0,0.28)";
+
+        edges.forEach(([a, b]) => {
+          const p1 = keypoints.get(a);
+          const p2 = keypoints.get(b);
+          if (!p1 || !p2) return;
+          videoOverlayCtx.beginPath();
+          videoOverlayCtx.moveTo(p1.x, p1.y);
+          videoOverlayCtx.lineTo(p2.x, p2.y);
+          videoOverlayCtx.strokeStyle = "rgba(255,255,255,0.82)";
+          videoOverlayCtx.lineWidth = 4;
+          videoOverlayCtx.stroke();
+          videoOverlayCtx.strokeStyle = "rgba(47, 205, 255, 0.92)";
+          videoOverlayCtx.lineWidth = 2;
+          videoOverlayCtx.stroke();
+        });
+
+        const jointColors = {
+          nose: DESIGN.colors.head,
+          left_eye: DESIGN.colors.head,
+          right_eye: DESIGN.colors.head,
+          left_ear: DESIGN.colors.head,
+          right_ear: DESIGN.colors.head,
+          left_shoulder: DESIGN.colors.shoulder,
+          right_shoulder: DESIGN.colors.shoulder,
+          left_elbow: DESIGN.colors.elbow,
+          right_elbow: DESIGN.colors.elbow,
+          left_wrist: DESIGN.colors.hand,
+          right_wrist: DESIGN.colors.hand,
+          left_hip: DESIGN.colors.hip,
+          right_hip: DESIGN.colors.hip,
+          left_knee: DESIGN.colors.knee,
+          right_knee: DESIGN.colors.knee,
+          left_ankle: DESIGN.colors.foot,
+          right_ankle: DESIGN.colors.foot,
+        };
+
+        keypoints.forEach((point, name) => {
+          const color = jointColors[name] || "#ffffff";
+          videoOverlayCtx.beginPath();
+          videoOverlayCtx.arc(
+            point.x,
+            point.y,
+            name.includes("elbow") ? 7 : 5.2,
+            0,
+            Math.PI * 2,
+          );
+          videoOverlayCtx.fillStyle = color;
+          videoOverlayCtx.fill();
+          videoOverlayCtx.lineWidth = 2;
+          videoOverlayCtx.strokeStyle = "rgba(255,255,255,0.85)";
+          videoOverlayCtx.stroke();
+        });
+
+        videoOverlayCtx.restore();
       }
 
       function getCurrentSeconds() {
@@ -1276,23 +1673,68 @@
         };
       }
 
+      function combineMultiJoint(names, joints = trackedJoints) {
+        const parts = names.map((name) => readJointPart(name, joints));
+        const visibleParts = parts.filter(
+          (part) => part.active || part.level > 0,
+        );
+
+        if (visibleParts.length === 0) {
+          return {
+            active: false,
+            level: 0,
+            direction: 0,
+            x: 0.5,
+            y: 0.5,
+          };
+        }
+
+        const level =
+          visibleParts.reduce((sum, part) => sum + part.level, 0) /
+          visibleParts.length;
+        const x =
+          visibleParts.reduce((sum, part) => sum + part.x, 0) /
+          visibleParts.length;
+        const y =
+          visibleParts.reduce((sum, part) => sum + part.y, 0) /
+          visibleParts.length;
+        const direction =
+          visibleParts.reduce((sum, part) => sum + part.direction, 0) /
+          visibleParts.length;
+
+        return {
+          active: visibleParts.some((part) => part.active),
+          level,
+          direction,
+          x,
+          y,
+        };
+      }
+
       function getCurrentBodyParts(joints = trackedJoints) {
+        const head = combineMultiJoint(
+          ["nose", "left_eye", "right_eye", "left_ear", "right_ear"],
+          joints,
+        );
         const shoulder = combineJointPair(
           "left_shoulder",
           "right_shoulder",
           joints,
         );
+        const elbow = combineJointPair("left_elbow", "right_elbow", joints);
         const hand = combineJointPair("left_wrist", "right_wrist", joints);
         const hip = combineJointPair("left_hip", "right_hip", joints);
         const knee = combineJointPair("left_knee", "right_knee", joints);
         const foot = combineJointPair("left_ankle", "right_ankle", joints);
 
         return {
+          head,
           shoulderL: shoulder.left,
           shoulderR: shoulder.right,
+          elbowL: elbow.left,
+          elbowR: elbow.right,
           handL: hand.left,
           handR: hand.right,
-
           hip: {
             active: hip.active,
             level: hip.level,
@@ -1300,7 +1742,6 @@
             x: 0.5,
             y: 0.5,
           },
-
           kneeL: knee.left,
           kneeR: knee.right,
           footL: foot.left,
@@ -1316,8 +1757,11 @@
         const parts = getCurrentBodyParts(track.joints);
 
         const energy =
+          parts.head.level +
           parts.shoulderL.level +
           parts.shoulderR.level +
+          parts.elbowL.level +
+          parts.elbowR.level +
           parts.handL.level +
           parts.handR.level +
           parts.hip.level +
@@ -1326,7 +1770,7 @@
           parts.footL.level +
           parts.footR.level;
 
-        const avgEnergy = energy / 9;
+        const avgEnergy = energy / 12;
 
         if (avgEnergy < 0.055) return;
 
@@ -1357,8 +1801,11 @@
 
       function getGlyphMotionSignature(parts, track, avgEnergy) {
         const activeParts = [
+          parts.head,
           parts.shoulderL,
           parts.shoulderR,
+          parts.elbowL,
+          parts.elbowR,
           parts.handL,
           parts.handR,
           parts.hip,
@@ -1470,7 +1917,14 @@
       function getJointMovementLevel(name, speed) {
         let divisor = 70;
 
+        if (
+          name.includes("nose") ||
+          name.includes("eye") ||
+          name.includes("ear")
+        )
+          divisor = 42;
         if (name.includes("hip")) divisor = 48;
+        if (name.includes("elbow")) divisor = 70;
         if (name.includes("wrist")) divisor = 95;
         if (name.includes("shoulder")) divisor = 52;
         if (name.includes("knee")) divisor = 60;
@@ -1480,7 +1934,14 @@
       }
 
       function getLaneIdFromJoint(name) {
+        if (
+          name.includes("nose") ||
+          name.includes("eye") ||
+          name.includes("ear")
+        )
+          return "head";
         if (name.includes("hip")) return "hip";
+        if (name.includes("elbow")) return "elbow";
         if (name.includes("wrist")) return "hand";
         if (name.includes("knee")) return "knee";
         if (name.includes("ankle")) return "foot";
@@ -1743,15 +2204,73 @@
         return x;
       }
 
+      function drawAlienSignalTitle(rect) {
+        const label = "Alien Signal";
+        const titleX = rect.left + 6;
+        const titleY = 12;
+        const fontSize = Math.max(40, Math.min(72, width * 0.058));
+        const font = `900 ${fontSize}px Arial Black, IBM Plex Sans, system-ui, sans-serif`;
+
+        const measureCanvas = document.createElement("canvas");
+        const measureCtx = measureCanvas.getContext("2d");
+        measureCtx.font = font;
+        const measuredWidth = measureCtx.measureText(label).width;
+
+        const temp = document.createElement("canvas");
+        const pad = 28;
+        temp.width = Math.ceil(measuredWidth + pad * 2);
+        temp.height = Math.ceil(fontSize * 1.5 + pad * 2);
+        const tctx = temp.getContext("2d");
+
+        tctx.clearRect(0, 0, temp.width, temp.height);
+        tctx.font = font;
+        tctx.textAlign = "left";
+        tctx.textBaseline = "middle";
+
+        const grad = tctx.createLinearGradient(0, 0, temp.width, 0);
+        grad.addColorStop(0, "#FF6B3D");
+        grad.addColorStop(0.38, "#FF6E96");
+        grad.addColorStop(0.72, "#B46AE1");
+        grad.addColorStop(1, "#7A96FF");
+        tctx.fillStyle = grad;
+        tctx.fillText(label, pad, temp.height * 0.52);
+
+        // soft blurred echoes to create a hazy alien-signal feel instead of pixelated slices
+        ctx.save();
+        ctx.globalAlpha = 0.14;
+        ctx.filter = "blur(12px)";
+        ctx.drawImage(temp, titleX - 2, titleY + 1);
+        ctx.drawImage(temp, titleX + 6, titleY + 2);
+        ctx.drawImage(temp, titleX + 12, titleY + 3);
+        ctx.restore();
+
+        ctx.save();
+        ctx.globalAlpha = 0.22;
+        ctx.filter = "blur(4px)";
+        ctx.drawImage(temp, titleX + 2, titleY);
+        ctx.drawImage(temp, titleX + 8, titleY + 1);
+        ctx.restore();
+
+        // smooth offset copies for signal distortion, but without blocky pixel breakup
+        ctx.save();
+        ctx.globalAlpha = 0.34;
+        ctx.drawImage(temp, titleX + 3, titleY);
+        ctx.globalAlpha = 0.22;
+        ctx.drawImage(temp, titleX + 10, titleY + 1);
+        ctx.restore();
+
+        // main title
+        ctx.save();
+        ctx.globalAlpha = 0.96;
+        ctx.drawImage(temp, titleX, titleY);
+        ctx.restore();
+      }
+
       function drawScoreBackground(now) {
         ctx.fillStyle = DESIGN.ground;
         ctx.fillRect(0, 0, width, height);
 
         const rect = getScoreRect();
-
-        ctx.fillStyle = "rgba(16,17,20,0.86)";
-        ctx.font = "300 28px IBM Plex Sans, system-ui";
-        ctx.fillText("Graphic Score", rect.left, 44);
 
         const rows = 108;
         for (let i = 0; i <= rows; i++) {
@@ -1765,24 +2284,61 @@
         }
       }
 
+      function drawTopFadeOverlay() {
+        const rect = getScoreRect();
+        const solidBandH = Math.max(96, rect.top - 4);
+        const fadeEndY = rect.top + Math.min(220, rect.height * 0.3);
+
+        ctx.save();
+        ctx.fillStyle = "rgba(255,255,255,0.985)";
+        ctx.fillRect(0, 0, width, solidBandH);
+
+        const grad = ctx.createLinearGradient(0, solidBandH, 0, fadeEndY);
+        grad.addColorStop(0, "rgba(255,255,255,0.985)");
+        grad.addColorStop(0.28, "rgba(255,255,255,0.88)");
+        grad.addColorStop(0.62, "rgba(255,255,255,0.42)");
+        grad.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, solidBandH, width, fadeEndY - solidBandH);
+        ctx.restore();
+      }
+
       function drawLegendBar(rect) {
         const panelY = height - PANEL_HEIGHT;
         const panelH = PANEL_HEIGHT;
         const panelX = 0;
         const panelW = width;
-        const itemWidth = panelW / 5;
+        const itemWidth = panelW / 7;
         const items = [
           {
-            id: "hip",
-            label: "HIP · 엉덩이",
-            desc: "중심 / 무게",
-            color: DESIGN.colors.hip,
+            id: "head",
+            label: "HEAD · 머리",
+            desc: "고개 / 시선",
+            color: DESIGN.colors.head,
+          },
+          {
+            id: "shoulder",
+            label: "SHOULDER · 어깨",
+            desc: "확장 / 호흡",
+            color: DESIGN.colors.shoulder,
+          },
+          {
+            id: "elbow",
+            label: "ELBOW · 팔꿈치",
+            desc: "굽힘 / 연결",
+            color: DESIGN.colors.elbow,
           },
           {
             id: "hand",
             label: "HAND · 손",
             desc: "제스처 / 신호",
             color: DESIGN.colors.hand,
+          },
+          {
+            id: "hip",
+            label: "HIP · 엉덩이",
+            desc: "중심 / 무게",
+            color: DESIGN.colors.hip,
           },
           {
             id: "knee",
@@ -1796,12 +2352,6 @@
             desc: "스텝 / 접지",
             color: DESIGN.colors.foot,
           },
-          {
-            id: "shoulder",
-            label: "SHOULDER · 어깨",
-            desc: "확장 / 호흡",
-            color: DESIGN.colors.shoulder,
-          },
         ];
 
         ctx.save();
@@ -1813,7 +2363,7 @@
 
         items.forEach((item, index) => {
           const x0 = panelX + index * itemWidth;
-          const cx = x0 + itemWidth * 0.12;
+          const cx = x0 + itemWidth * 0.08;
           const cy = panelY + panelH * 0.45;
 
           if (index > 0) {
@@ -1827,13 +2377,13 @@
           drawLegendSymbol(item.id, cx + 18, cy - 2, item.color);
 
           ctx.fillStyle = "rgba(16,17,20,0.9)";
-          ctx.font = "600 12px IBM Plex Sans, system-ui";
+          ctx.font = "600 11px IBM Plex Sans, system-ui";
           ctx.textAlign = "left";
-          ctx.fillText(item.label, cx + 42, panelY + 30);
+          ctx.fillText(item.label, cx + 38, panelY + 30);
 
           ctx.fillStyle = "rgba(16,17,20,0.52)";
-          ctx.font = "11px IBM Plex Sans, system-ui";
-          ctx.fillText(item.desc, cx + 42, panelY + 48);
+          ctx.font = "10px IBM Plex Sans, system-ui";
+          ctx.fillText(item.desc, cx + 38, panelY + 47);
         });
         ctx.restore();
       }
@@ -1843,16 +2393,20 @@
         const level = 0.9;
         const size = 18;
 
-        if (id === "hip") {
-          drawMiniTwin(x, y, size, colorHex, alpha, level);
+        if (id === "head") {
+          drawMiniHead(x, y, size, colorHex, alpha, level);
+        } else if (id === "shoulder") {
+          drawMiniArch(x, y, size, colorHex, alpha, level);
+        } else if (id === "elbow") {
+          drawMiniElbow(x, y, size, "R", colorHex, alpha, level);
         } else if (id === "hand") {
           drawMiniDisc(x, y, size, "R", colorHex, alpha, level);
         } else if (id === "knee") {
           drawMiniDome(x, y, size, colorHex, alpha, level);
         } else if (id === "foot") {
           drawMiniPoint(x, y, size, "R", colorHex, alpha, level);
-        } else if (id === "shoulder") {
-          drawMiniArch(x, y, size, colorHex, alpha, level);
+        } else if (id === "hip") {
+          drawMiniTwin(x, y, size, colorHex, alpha, level);
         }
       }
 
@@ -2131,6 +2685,7 @@
 
         canvas.width = width;
         canvas.height = height;
+        setupVideoOverlayCanvas();
       });
     </script>
   </body>

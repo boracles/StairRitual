@@ -205,7 +205,7 @@
 
     <div id="status">
       관절 움직임이 세로 시간축 위에 graphic score로 기록됩니다.<br />
-      실루엣 구조: 어깨 / 손 / 엉덩이 / 무릎 / 발
+      실루엣 구조: 머리 / 발 / 엉덩이 / 손 / 무릎 / 팔꿈치
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
@@ -280,12 +280,11 @@
 
         colors: {
           head: "#C5B4FF", // light lavender
-          shoulder: "#6CCBFF", // airy sky blue
-          elbow: "#58D66A", // fresh green
-          hand: "#F3E70A", // vivid yellow
-          hip: "#FF9DB2", // soft pink
-          knee: "#FF9A4D", // warm orange
           foot: "#FF0A8A", // vivid magenta
+          hip: "#FF8FB0", // soft pink
+          hand: "#F3E70A", // vivid yellow
+          knee: "#FF9333", // warm orange
+          elbow: "#38BFEA", // cyan blue
         },
       };
 
@@ -297,80 +296,70 @@
 
       const BODY_GUIDE = {
         head: { spread: 0, jitter: 8 },
-        shoulder: { spread: 64, jitter: 10 },
-        elbow: { spread: 112, jitter: 12 },
-        hand: { spread: 150, jitter: 14 },
-        hip: { spread: 0, jitter: 8 },
-        knee: { spread: 42, jitter: 8 },
         foot: { spread: 88, jitter: 10 },
+        hip: { spread: 0, jitter: 8 },
+        hand: { spread: 150, jitter: 14 },
+        knee: { spread: 42, jitter: 8 },
+        elbow: { spread: 112, jitter: 12 },
       };
 
       const EVENT_DENSITY = {
         head: { threshold: 0.018, minInterval: 0.22, minGap: 0.2 },
-        shoulder: { threshold: 0.022, minInterval: 0.24, minGap: 0.22 },
-        elbow: { threshold: 0.018, minInterval: 0.14, minGap: 0.12 },
-        hand: { threshold: 0.02, minInterval: 0.14, minGap: 0.14 },
-        hip: { threshold: 0.016, minInterval: 0.22, minGap: 0.2 },
-        knee: { threshold: 0.018, minInterval: 0.18, minGap: 0.18 },
         foot: { threshold: 0.018, minInterval: 0.22, minGap: 0.2 },
+        hip: { threshold: 0.016, minInterval: 0.22, minGap: 0.2 },
+        hand: { threshold: 0.02, minInterval: 0.14, minGap: 0.14 },
+        knee: { threshold: 0.018, minInterval: 0.18, minGap: 0.18 },
+        elbow: { threshold: 0.018, minInterval: 0.14, minGap: 0.12 },
       };
 
       const lanes = [
         {
           id: "head",
-          label: "HEAD · 머리",
+          label: "HEAD",
           token: "ORB",
           joints: ["nose", "left_eye", "right_eye", "left_ear", "right_ear"],
           shape: "head",
           color: DESIGN.colors.head,
         },
         {
-          id: "shoulder",
-          label: "SHOULDER · 어깨",
-          token: "ARCH",
-          joints: ["left_shoulder", "right_shoulder"],
-          shape: "arch",
-          color: DESIGN.colors.shoulder,
-        },
-        {
-          id: "elbow",
-          label: "ELBOW · 팔꿈치",
-          token: "HINGE · L/R",
-          joints: ["left_elbow", "right_elbow"],
-          shape: "elbow",
-          color: DESIGN.colors.elbow,
-        },
-        {
-          id: "hand",
-          label: "HAND · 손",
-          token: "DISC · L/R",
-          joints: ["left_wrist", "right_wrist"],
-          shape: "disc",
-          color: DESIGN.colors.hand,
+          id: "foot",
+          label: "FOOT",
+          token: "POINT",
+          joints: ["left_ankle", "right_ankle"],
+          shape: "point",
+          color: DESIGN.colors.foot,
         },
         {
           id: "hip",
-          label: "HIP · 엉덩이",
+          label: "HIP",
           token: "CORE",
           joints: ["left_hip", "right_hip"],
           shape: "core",
           color: DESIGN.colors.hip,
         },
         {
+          id: "hand",
+          label: "HAND",
+          token: "OVAL",
+          joints: ["left_wrist", "right_wrist"],
+          shape: "disc",
+          color: DESIGN.colors.hand,
+        },
+        {
           id: "knee",
-          label: "KNEE · 무릎",
+          label: "KNEE",
           token: "DOME",
           joints: ["left_knee", "right_knee"],
           shape: "dome",
           color: DESIGN.colors.knee,
         },
         {
-          id: "foot",
-          label: "FOOT · 발",
-          token: "POINT · L/R",
-          joints: ["left_ankle", "right_ankle"],
-          shape: "point",
-          color: DESIGN.colors.foot,
+          id: "elbow",
+          label: "ELBOW",
+          token: "ARC",
+          joints: ["left_elbow", "right_elbow"],
+          shape: "elbow",
+          color: DESIGN.colors.elbow,
         },
       ];
 
@@ -556,7 +545,6 @@
         hand: ["C4", "D4", "Eb4", "G4", "Bb4", "C5", "D5", "G5"],
         knee: ["C2", "D2", "G2", "Bb2"],
         foot: ["C1", "G1", "Bb1"],
-        shoulder: ["C2", "G2", "Bb2", "C3", "Eb3"],
       };
 
       // --------------------------------
@@ -878,10 +866,6 @@
             color: DESIGN.colors.head,
           },
           {
-            level: glyph.parts.shoulderL.level + glyph.parts.shoulderR.level,
-            color: DESIGN.colors.shoulder,
-          },
-          {
             level: glyph.parts.elbowL.level + glyph.parts.elbowR.level,
             color: DESIGN.colors.elbow,
           },
@@ -909,12 +893,6 @@
             id: "head",
             level: glyph.parts.head.level,
             color: DESIGN.colors.head,
-          },
-          {
-            id: "shoulder",
-            level:
-              (glyph.parts.shoulderL.level + glyph.parts.shoulderR.level) * 0.5,
-            color: DESIGN.colors.shoulder,
           },
           {
             id: "elbow",
@@ -1158,7 +1136,7 @@
 
       function drawBodyGlyph(glyph, x, y, scale, alpha, age, options = {}) {
         const p = glyph.parts;
-        const unit = 76 * scale;
+        const unit = 46 * scale;
 
         const pos = {
           head: { x: 0, y: -unit * 2.35 },
@@ -1199,28 +1177,6 @@
             DESIGN.colors.head,
             alpha,
             p.head.level,
-          );
-        }
-
-        if (p.shoulderL.active) {
-          drawMiniArch(
-            pos.shoulderL.x,
-            pos.shoulderL.y,
-            unit * 0.2 * (0.82 + p.shoulderL.level * 0.72),
-            DESIGN.colors.shoulder,
-            alpha,
-            p.shoulderL.level,
-          );
-        }
-
-        if (p.shoulderR.active) {
-          drawMiniArch(
-            pos.shoulderR.x,
-            pos.shoulderR.y,
-            unit * 0.2 * (0.82 + p.shoulderR.level * 0.72),
-            DESIGN.colors.shoulder,
-            alpha,
-            p.shoulderR.level,
           );
         }
 
@@ -1501,44 +1457,19 @@
       function drawMiniElbow(x, y, size, side, colorHex, alpha, level) {
         ctx.save();
         ctx.translate(x, y);
-        applyMiniStyle(colorHex, alpha, level);
 
-        fillSoftShape(
-          (m = 1) => {
-            const w = size * 1.08 * m;
-            const h = size * 0.72 * m;
-            ctx.moveTo(-w * 0.98, -h * 0.14);
-            ctx.bezierCurveTo(
-              -w * 0.72,
-              -h * 1.0,
-              w * 0.24,
-              -h * 1.08,
-              w * 0.82,
-              -h * 0.38,
-            );
-            ctx.bezierCurveTo(
-              w * 1.12,
-              h * 0.02,
-              w * 0.92,
-              h * 0.72,
-              w * 0.18,
-              h * 0.86,
-            );
-            ctx.bezierCurveTo(
-              -w * 0.54,
-              h * 1.0,
-              -w * 1.08,
-              h * 0.44,
-              -w * 0.98,
-              -h * 0.14,
-            );
-            ctx.closePath();
-          },
-          colorHex,
-          alpha * (side === "L" ? 0.84 : 1),
-          level,
-          size * 1.6,
-        );
+        const c = hexToRgb(colorHex);
+        const r = size * 1.15;
+        const thickness = size * 0.42;
+
+        ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${Math.min(1, alpha)})`;
+
+        ctx.beginPath();
+        ctx.arc(0, 0, r, Math.PI, Math.PI * 2);
+        ctx.lineTo(r - thickness, 0);
+        ctx.arc(0, 0, r - thickness, Math.PI * 2, Math.PI, true);
+        ctx.closePath();
+        ctx.fill();
 
         ctx.restore();
       }
@@ -1546,18 +1477,16 @@
       function drawMiniDisc(x, y, size, side, colorHex, alpha, level) {
         ctx.save();
         ctx.translate(x, y);
-        const a = alpha * (side === "L" ? 0.84 : 1);
-        applyMiniStyle(colorHex, a, level);
 
-        fillSoftShape(
-          (m = 1) => {
-            ctx.arc(0, 0, size * 0.98 * m, 0, Math.PI * 2);
-          },
-          colorHex,
-          a,
-          level,
-          size * 1.5,
-        );
+        const c = hexToRgb(colorHex);
+        ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${Math.min(1, alpha)})`;
+        ctx.strokeStyle = "rgba(0,0,0,0.9)";
+        ctx.lineWidth = Math.max(1.4, size * 0.08);
+
+        ctx.beginPath();
+        ctx.ellipse(0, 0, size * 0.68, size * 1.05, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
 
         ctx.restore();
       }
@@ -1624,39 +1553,16 @@
       function drawMiniPoint(x, y, size, side, colorHex, alpha, level) {
         ctx.save();
         ctx.translate(x, y);
-        const a = alpha * (side === "L" ? 0.84 : 1);
-        applyMiniStyle(colorHex, a, level);
 
-        fillSoftShape(
-          (m = 1) => {
-            const w = size * 0.98 * m;
-            const h = size * 1.08 * m;
-            ctx.moveTo(0, -h * 1.02);
-            ctx.bezierCurveTo(
-              w * 0.62,
-              -h * 0.7,
-              w * 0.98,
-              -h * 0.02,
-              w * 0.72,
-              h * 0.62,
-            );
-            ctx.quadraticCurveTo(w * 0.34, h * 0.98, 0, h * 0.96);
-            ctx.quadraticCurveTo(-w * 0.34, h * 0.98, -w * 0.72, h * 0.62);
-            ctx.bezierCurveTo(
-              -w * 0.98,
-              -h * 0.02,
-              -w * 0.62,
-              -h * 0.7,
-              0,
-              -h * 1.02,
-            );
-            ctx.closePath();
-          },
-          colorHex,
-          a,
-          level,
-          size * 1.6,
-        );
+        const c = hexToRgb(colorHex);
+        ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${Math.min(1, alpha)})`;
+
+        ctx.beginPath();
+        ctx.moveTo(-size * 0.9, -size * 0.86);
+        ctx.lineTo(size * 0.9, -size * 0.86);
+        ctx.lineTo(0, size * 1.18);
+        ctx.closePath();
+        ctx.fill();
 
         ctx.restore();
       }
@@ -2035,11 +1941,6 @@
           ["nose", "left_eye", "right_eye", "left_ear", "right_ear"],
           joints,
         );
-        const shoulder = combineJointPair(
-          "left_shoulder",
-          "right_shoulder",
-          joints,
-        );
         const elbow = combineJointPair("left_elbow", "right_elbow", joints);
         const hand = combineJointPair("left_wrist", "right_wrist", joints);
         const hip = combineJointPair("left_hip", "right_hip", joints);
@@ -2048,8 +1949,6 @@
 
         return {
           head,
-          shoulderL: shoulder.left,
-          shoulderR: shoulder.right,
           elbowL: elbow.left,
           elbowR: elbow.right,
           handL: hand.left,
@@ -2077,8 +1976,6 @@
 
         const energy =
           parts.head.level +
-          parts.shoulderL.level +
-          parts.shoulderR.level +
           parts.elbowL.level +
           parts.elbowR.level +
           parts.handL.level +
@@ -2089,7 +1986,7 @@
           parts.footL.level +
           parts.footR.level;
 
-        const avgEnergy = Math.max(energy / 12, 0.045);
+        const avgEnergy = Math.max(energy / 10, 0.045);
 
         if (avgEnergy < 0.012) return;
 
@@ -2122,8 +2019,6 @@
       function getGlyphMotionSignature(parts, track, avgEnergy) {
         const activeParts = [
           parts.head,
-          parts.shoulderL,
-          parts.shoulderR,
           parts.elbowL,
           parts.elbowR,
           parts.handL,
@@ -2265,7 +2160,6 @@
         if (name.includes("wrist")) return "hand";
         if (name.includes("knee")) return "knee";
         if (name.includes("ankle")) return "foot";
-        if (name.includes("shoulder")) return "shoulder";
         return null;
       }
 
@@ -2367,7 +2261,6 @@
         if (laneId === "hand") return 0.12 + level * 0.45;
         if (laneId === "knee") return 0.25 + level * 0.8;
         if (laneId === "foot") return 0.35 + level * 1.2;
-        if (laneId === "shoulder") return 0.7 + level * 1.6;
         return 0.3;
       }
 
@@ -2415,18 +2308,6 @@
           bodySynth.triggerAttackRelease(note, "8n", now, 0.35 + level * 0.7);
           // metallic tick removed for softer blurry sound
           delay.feedback.rampTo(0.18 + level * 0.35, 0.16);
-        } else if (event.laneId === "shoulder") {
-          const note = pickNote(scales.shoulder, event.bodyY);
-          signalSynth.triggerAttackRelease(
-            note,
-            "8n",
-            now,
-            0.15 + level * 0.45,
-          );
-
-          drone.frequency.rampTo(45 + event.bodyY * 60 + level * 35, 0.2);
-          droneGain.gain.rampTo(0.04 + level * 0.26, 0.2);
-          reverb.wet.rampTo(0.3 + level * 0.38, 0.3);
         }
       }
 
@@ -2848,7 +2729,6 @@
         return (
           {
             head: DESIGN.colors.head,
-            shoulder: DESIGN.colors.shoulder,
             elbow: DESIGN.colors.elbow,
             hand: DESIGN.colors.hand,
             hip: DESIGN.colors.hip,
@@ -2877,8 +2757,7 @@
         // Hue ranges match the current score color system.
         // Dark/black pixels are intentionally ignored before this function.
         if (h >= 238 && h <= 272) return "head";
-        if (h >= 188 && h <= 208) return "shoulder";
-        if (h >= 112 && h <= 145) return "elbow";
+        if (h >= 188 && h <= 205) return "elbow";
         if (h >= 49 && h <= 65 && s > 0.42) return "hand";
         if ((h >= 342 && h <= 360) || h <= 8) return "hip";
         if (h >= 20 && h <= 38) return "knee";
@@ -2890,7 +2769,6 @@
         const base =
           {
             head: 5,
-            shoulder: 7,
             elbow: 7,
             hand: 6,
             hip: 6,
@@ -3047,11 +2925,6 @@
           signalSynth.triggerAttackRelease(note, "4n", now, velocity * 0.52);
           squealGain.gain.rampTo(0.004 + e * 0.034, 0.35);
           squealOsc.frequency.rampTo(420 + y * 620 + e * 180, 0.5);
-        } else if (event.category === "shoulder") {
-          const note = pickNote(scales.shoulder, y);
-          signalSynth.triggerAttackRelease(note, "2n", now, velocity * 0.38);
-          droneGain.gain.rampTo(0.026 + e * 0.11, 0.6);
-          reverb.wet.rampTo(0.68 + e * 0.18, 0.8);
         } else if (event.category === "elbow") {
           const note = pickNote(["G2", "Bb2", "C3", "Eb3"], x);
           metalSynth.triggerAttackRelease(note, "8n", now, velocity * 0.22);
@@ -3249,54 +3122,29 @@
             size * 1.35,
           );
 
-        const drawElbow = (size, colorHex, alpha, level) =>
-          beginSoftFill(
-            (m = 1) => {
-              const w = size * 1.08 * m;
-              const h = size * 0.72 * m;
-              rctx.moveTo(-w * 0.98, -h * 0.14);
-              rctx.bezierCurveTo(
-                -w * 0.72,
-                -h * 1.0,
-                w * 0.24,
-                -h * 1.08,
-                w * 0.82,
-                -h * 0.38,
-              );
-              rctx.bezierCurveTo(
-                w * 1.12,
-                h * 0.02,
-                w * 0.92,
-                h * 0.72,
-                w * 0.18,
-                h * 0.86,
-              );
-              rctx.bezierCurveTo(
-                -w * 0.54,
-                h * 1.0,
-                -w * 1.08,
-                h * 0.44,
-                -w * 0.98,
-                -h * 0.14,
-              );
-              rctx.closePath();
-            },
-            colorHex,
-            alpha,
-            level,
-            size * 1.6,
-          );
+        const drawElbow = (size, colorHex, alpha, level) => {
+          const c = hexToRgbLocal(colorHex);
+          const r = size * 1.15;
+          const thickness = size * 0.42;
+          rctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${Math.min(1, alpha)})`;
+          rctx.beginPath();
+          rctx.arc(0, 0, r, Math.PI, Math.PI * 2);
+          rctx.lineTo(r - thickness, 0);
+          rctx.arc(0, 0, r - thickness, Math.PI * 2, Math.PI, true);
+          rctx.closePath();
+          rctx.fill();
+        };
 
-        const drawDisc = (size, colorHex, alpha, level) =>
-          beginSoftFill(
-            (m = 1) => {
-              rctx.arc(0, 0, size * 0.98 * m, 0, Math.PI * 2);
-            },
-            colorHex,
-            alpha,
-            level,
-            size * 1.5,
-          );
+        const drawDisc = (size, colorHex, alpha, level) => {
+          const c = hexToRgbLocal(colorHex);
+          rctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${Math.min(1, alpha)})`;
+          rctx.strokeStyle = "rgba(0,0,0,0.9)";
+          rctx.lineWidth = Math.max(1.4, size * 0.08);
+          rctx.beginPath();
+          rctx.ellipse(0, 0, size * 0.68, size * 1.05, 0, 0, Math.PI * 2);
+          rctx.fill();
+          rctx.stroke();
+        };
 
         const drawTwin = (size, colorHex, alpha, level) => {
           const r = size * 0.74;
@@ -3344,41 +3192,20 @@
             size * 1.56,
           );
 
-        const drawPoint = (size, colorHex, alpha, level) =>
-          beginSoftFill(
-            (m = 1) => {
-              const w = size * 0.98 * m;
-              const h = size * 1.08 * m;
-              rctx.moveTo(0, -h * 1.02);
-              rctx.bezierCurveTo(
-                w * 0.62,
-                -h * 0.7,
-                w * 0.98,
-                -h * 0.02,
-                w * 0.72,
-                h * 0.62,
-              );
-              rctx.quadraticCurveTo(w * 0.34, h * 0.98, 0, h * 0.96);
-              rctx.quadraticCurveTo(-w * 0.34, h * 0.98, -w * 0.72, h * 0.62);
-              rctx.bezierCurveTo(
-                -w * 0.98,
-                -h * 0.02,
-                -w * 0.62,
-                -h * 0.7,
-                0,
-                -h * 1.02,
-              );
-              rctx.closePath();
-            },
-            colorHex,
-            alpha,
-            level,
-            size * 1.6,
-          );
+        const drawPoint = (size, colorHex, alpha, level) => {
+          const c = hexToRgbLocal(colorHex);
+          rctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${Math.min(1, alpha)})`;
+          rctx.beginPath();
+          rctx.moveTo(-size * 0.9, -size * 0.86);
+          rctx.lineTo(size * 0.9, -size * 0.86);
+          rctx.lineTo(0, size * 1.18);
+          rctx.closePath();
+          rctx.fill();
+        };
 
         const drawGlyphLocal = (glyph, x, y, scale, alpha, blurPx = 0) => {
           const p = glyph.parts;
-          const unit = 76 * scale;
+          const unit = 46 * scale;
           const pos = {
             head: { x: 0, y: -unit * 2.35 },
             shoulderL: { x: -unit * 0.95, y: -unit * 1.45 },
@@ -3407,28 +3234,6 @@
               DESIGN.colors.head,
               alpha,
               p.head.level,
-            );
-            rctx.restore();
-          }
-          if (p.shoulderL.active) {
-            rctx.save();
-            rctx.translate(pos.shoulderL.x, pos.shoulderL.y);
-            drawArch(
-              unit * 0.2 * (0.82 + p.shoulderL.level * 0.72),
-              DESIGN.colors.shoulder,
-              alpha,
-              p.shoulderL.level,
-            );
-            rctx.restore();
-          }
-          if (p.shoulderR.active) {
-            rctx.save();
-            rctx.translate(pos.shoulderR.x, pos.shoulderR.y);
-            drawArch(
-              unit * 0.2 * (0.82 + p.shoulderR.level * 0.72),
-              DESIGN.colors.shoulder,
-              alpha,
-              p.shoulderR.level,
             );
             rctx.restore();
           }
@@ -3539,12 +3344,6 @@
             id: "head",
             level: glyph.parts.head.level,
             color: DESIGN.colors.head,
-          },
-          {
-            id: "shoulder",
-            level:
-              (glyph.parts.shoulderL.level + glyph.parts.shoulderR.level) * 0.5,
-            color: DESIGN.colors.shoulder,
           },
           {
             id: "elbow",
@@ -3768,50 +3567,14 @@
         const contentInset = 36;
         const contentX = panelX + contentInset;
         const contentW = panelW - contentInset * 2;
-        const itemWidth = contentW / 7;
+        const itemWidth = contentW / 6;
         const items = [
-          {
-            id: "head",
-            label: "HEAD · 머리",
-            desc: "고개 / 시선",
-            color: DESIGN.colors.head,
-          },
-          {
-            id: "shoulder",
-            label: "SHOULDER · 어깨",
-            desc: "확장 / 호흡",
-            color: DESIGN.colors.shoulder,
-          },
-          {
-            id: "elbow",
-            label: "ELBOW · 팔꿈치",
-            desc: "굽힘 / 연결",
-            color: DESIGN.colors.elbow,
-          },
-          {
-            id: "hand",
-            label: "HAND · 손",
-            desc: "제스처 / 신호",
-            color: DESIGN.colors.hand,
-          },
-          {
-            id: "hip",
-            label: "HIP · 엉덩이",
-            desc: "중심 / 무게",
-            color: DESIGN.colors.hip,
-          },
-          {
-            id: "knee",
-            label: "KNEE · 무릎",
-            desc: "굽힘 / 리듬",
-            color: DESIGN.colors.knee,
-          },
-          {
-            id: "foot",
-            label: "FOOT · 발",
-            desc: "스텝 / 접지",
-            color: DESIGN.colors.foot,
-          },
+          { id: "head", label: "HEAD", color: DESIGN.colors.head },
+          { id: "foot", label: "FOOT", color: DESIGN.colors.foot },
+          { id: "hip", label: "HIP", color: DESIGN.colors.hip },
+          { id: "hand", label: "HAND", color: DESIGN.colors.hand },
+          { id: "knee", label: "KNEE", color: DESIGN.colors.knee },
+          { id: "elbow", label: "ELBOW", color: DESIGN.colors.elbow },
         ];
 
         ctx.save();
@@ -3823,17 +3586,15 @@
 
         items.forEach((item, index) => {
           const x0 = contentX + index * itemWidth;
-          const symbolX = x0 + 26;
-          const symbolY = panelY + panelH * 0.52;
-          const textX = x0 + 76;
-          const labelY = panelY + 28;
-          const descY = panelY + 48;
+          const symbolX = x0 + itemWidth * 0.5;
+          const symbolY = panelY + 48;
+          const labelY = panelY + 96;
 
           if (index > 0) {
-            ctx.strokeStyle = "rgba(16,17,20,0.10)";
+            ctx.strokeStyle = "rgba(16,17,20,0.06)";
             ctx.beginPath();
-            ctx.moveTo(x0, panelY + 10);
-            ctx.lineTo(x0, panelY + panelH - 10);
+            ctx.moveTo(x0, panelY + 18);
+            ctx.lineTo(x0, panelY + panelH - 18);
             ctx.stroke();
           }
 
@@ -3841,15 +3602,10 @@
 
           ctx.fillStyle = "rgba(16,17,20,0.90)";
           ctx.font =
-            '600 11px Pretendard, "Noto Sans KR", "Noto Sans", Arial, sans-serif';
-          ctx.textAlign = "left";
+            '600 12px Pretendard, "Noto Sans KR", "Noto Sans", Arial, sans-serif';
+          ctx.textAlign = "center";
           ctx.textBaseline = "middle";
-          ctx.fillText(item.label, textX, labelY);
-
-          ctx.fillStyle = "rgba(16,17,20,0.52)";
-          ctx.font =
-            '500 10px Pretendard, "Noto Sans KR", "Noto Sans", Arial, sans-serif';
-          ctx.fillText(item.desc, textX, descY);
+          ctx.fillText(item.label, symbolX, labelY);
         });
         ctx.restore();
       }
@@ -3859,19 +3615,17 @@
         const level = 0.9;
 
         if (id === "head") {
-          drawMiniHead(x, y, 24, colorHex, alpha, level);
-        } else if (id === "shoulder") {
-          drawMiniArch(x, y, 16, colorHex, alpha, level);
-        } else if (id === "elbow") {
-          drawMiniElbow(x, y, 15, "R", colorHex, alpha, level);
-        } else if (id === "hand") {
-          drawMiniDisc(x, y, 16, "R", colorHex, alpha, level);
-        } else if (id === "knee") {
-          drawMiniDome(x, y, 15, colorHex, alpha, level);
+          drawMiniHead(x, y, 26, colorHex, alpha, level);
         } else if (id === "foot") {
-          drawMiniPoint(x, y, 15, "R", colorHex, alpha, level);
+          drawMiniPoint(x, y, 26, "R", colorHex, alpha, level);
         } else if (id === "hip") {
-          drawMiniTwin(x, y, 15, colorHex, alpha, level);
+          drawMiniTwin(x, y, 25, colorHex, alpha, level);
+        } else if (id === "hand") {
+          drawMiniDisc(x, y, 29, "R", colorHex, alpha, level);
+        } else if (id === "knee") {
+          drawMiniDome(x, y, 28, colorHex, alpha, level);
+        } else if (id === "elbow") {
+          drawMiniElbow(x, y + 4, 28, "R", colorHex, alpha, level);
         }
       }
 

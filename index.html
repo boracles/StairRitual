@@ -54,6 +54,7 @@
         width: 260px;
         height: auto;
         border-radius: 12px;
+        transform: scaleX(-1);
         z-index: 8;
         pointer-events: none;
       }
@@ -776,7 +777,7 @@
 
               try {
                 latestPoses = await detector.estimatePoses(video, {
-                  flipHorizontal: true,
+                  flipHorizontal: false,
                   maxPoses: MAX_PEOPLE,
                 });
 
@@ -1655,43 +1656,54 @@
           if ((point.score || 0) >= 0.22) keypoints.set(point.name, point);
         });
 
+        const edgeColor = (category) => {
+          const c = hexToRgb(DESIGN.colors[category]);
+          return `rgba(${c.r},${c.g},${c.b},0.92)`;
+        };
+
+        // 뼈대도 기호 색 체계와 맞춤.
+        // shoulder 자체는 기호에서 제거했으므로 점은 찍지 않고, 연결선만 주변 관절 색으로 처리.
         const edges = [
-          ["left_ear", "left_eye"],
-          ["left_eye", "nose"],
-          ["nose", "right_eye"],
-          ["right_eye", "right_ear"],
-          ["left_shoulder", "right_shoulder"],
-          ["left_shoulder", "left_elbow"],
-          ["left_elbow", "left_wrist"],
-          ["right_shoulder", "right_elbow"],
-          ["right_elbow", "right_wrist"],
-          ["left_shoulder", "left_hip"],
-          ["right_shoulder", "right_hip"],
-          ["left_hip", "right_hip"],
-          ["left_hip", "left_knee"],
-          ["left_knee", "left_ankle"],
-          ["right_hip", "right_knee"],
-          ["right_knee", "right_ankle"],
+          { a: "left_ear", b: "left_eye", category: "head" },
+          { a: "left_eye", b: "nose", category: "head" },
+          { a: "nose", b: "right_eye", category: "head" },
+          { a: "right_eye", b: "right_ear", category: "head" },
+
+          { a: "left_shoulder", b: "left_elbow", category: "elbow" },
+          { a: "left_elbow", b: "left_wrist", category: "hand" },
+          { a: "right_shoulder", b: "right_elbow", category: "elbow" },
+          { a: "right_elbow", b: "right_wrist", category: "hand" },
+
+          { a: "left_shoulder", b: "left_hip", category: "hip" },
+          { a: "right_shoulder", b: "right_hip", category: "hip" },
+          { a: "left_hip", b: "right_hip", category: "hip" },
+
+          { a: "left_hip", b: "left_knee", category: "knee" },
+          { a: "left_knee", b: "left_ankle", category: "foot" },
+          { a: "right_hip", b: "right_knee", category: "knee" },
+          { a: "right_knee", b: "right_ankle", category: "foot" },
         ];
 
         videoOverlayCtx.save();
         videoOverlayCtx.lineCap = "round";
         videoOverlayCtx.lineJoin = "round";
         videoOverlayCtx.shadowBlur = 8;
-        videoOverlayCtx.shadowColor = "rgba(0,0,0,0.28)";
+        videoOverlayCtx.shadowColor = "rgba(0,0,0,0.18)";
 
-        edges.forEach(([a, b]) => {
+        edges.forEach(({ a, b, category }) => {
           const p1 = keypoints.get(a);
           const p2 = keypoints.get(b);
           if (!p1 || !p2) return;
+
           videoOverlayCtx.beginPath();
           videoOverlayCtx.moveTo(p1.x, p1.y);
           videoOverlayCtx.lineTo(p2.x, p2.y);
-          videoOverlayCtx.strokeStyle = "rgba(255,255,255,0.82)";
-          videoOverlayCtx.lineWidth = 4;
+          videoOverlayCtx.strokeStyle = "rgba(255,255,255,0.78)";
+          videoOverlayCtx.lineWidth = 5;
           videoOverlayCtx.stroke();
-          videoOverlayCtx.strokeStyle = "rgba(47, 205, 255, 0.92)";
-          videoOverlayCtx.lineWidth = 2;
+
+          videoOverlayCtx.strokeStyle = edgeColor(category);
+          videoOverlayCtx.lineWidth = 2.6;
           videoOverlayCtx.stroke();
         });
 
@@ -1701,12 +1713,12 @@
           right_eye: DESIGN.colors.head,
           left_ear: DESIGN.colors.head,
           right_ear: DESIGN.colors.head,
-          left_shoulder: DESIGN.colors.shoulder,
-          right_shoulder: DESIGN.colors.shoulder,
+
           left_elbow: DESIGN.colors.elbow,
           right_elbow: DESIGN.colors.elbow,
           left_wrist: DESIGN.colors.hand,
           right_wrist: DESIGN.colors.hand,
+
           left_hip: DESIGN.colors.hip,
           right_hip: DESIGN.colors.hip,
           left_knee: DESIGN.colors.knee,
@@ -1716,19 +1728,21 @@
         };
 
         keypoints.forEach((point, name) => {
-          const color = jointColors[name] || "#ffffff";
+          const color = jointColors[name];
+          if (!color) return;
+
           videoOverlayCtx.beginPath();
           videoOverlayCtx.arc(
             point.x,
             point.y,
-            name.includes("elbow") ? 7 : 5.2,
+            name.includes("wrist") || name.includes("ankle") ? 5.8 : 5.2,
             0,
             Math.PI * 2,
           );
           videoOverlayCtx.fillStyle = color;
           videoOverlayCtx.fill();
           videoOverlayCtx.lineWidth = 2;
-          videoOverlayCtx.strokeStyle = "rgba(255,255,255,0.85)";
+          videoOverlayCtx.strokeStyle = "rgba(255,255,255,0.86)";
           videoOverlayCtx.stroke();
         });
 
@@ -2086,7 +2100,9 @@
       }
 
       function mapVideoXToCanvas(x) {
-        return (x / video.videoWidth) * width;
+        // video and overlay are mirrored for a natural camera view,
+        // so the score-space x coordinate must be mirrored too.
+        return ((video.videoWidth - x) / video.videoWidth) * width;
       }
 
       function mapVideoYToCanvas(y) {
